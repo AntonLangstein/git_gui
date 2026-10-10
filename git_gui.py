@@ -665,25 +665,45 @@ class ConflictDialog(QDialog):
         self.run(("add", "--", self.path))
 
 
+def repo_value(key, repo, default):
+    """Pro-Repo-Einstellung (als JSON {repo: wert} unter `key` gespeichert)."""
+    try:
+        return json.loads(QSettings("git_gui", "git_gui").value(key, "{}")).get(repo, default)
+    except ValueError:
+        return default
+
+
+def set_repo_value(key, repo, value):
+    settings = QSettings("git_gui", "git_gui")
+    try:
+        data = json.loads(settings.value(key, "{}"))
+    except ValueError:
+        data = {}
+    if value:
+        data[repo] = value
+    else:
+        data.pop(repo, None)
+    settings.setValue(key, json.dumps(data))
+
+
 def load_stars(repo):
     """Favoriten (Starred) eines Repos als ["branch:main", "remote:origin/dev", …]."""
-    try:
-        return json.loads(QSettings("git_gui", "git_gui").value("starred", "{}")).get(repo, [])
-    except ValueError:
-        return []
+    return repo_value("starred", repo, [])
 
 
 def save_stars(repo, stars):
-    settings = QSettings("git_gui", "git_gui")
-    try:
-        data = json.loads(settings.value("starred", "{}"))
-    except ValueError:
-        data = {}
-    if stars:
-        data[repo] = stars
-    else:
-        data.pop(repo, None)
-    settings.setValue("starred", json.dumps(data))
+    set_repo_value("starred", repo, stars)
+
+
+def graph_args(only, hidden, existing):
+    """Ref-Argumente für `git log` in „Alle Commits“ mit Graph-Filter.
+
+    only = nur diese Refs zeigen, hidden = diese Refs ausblenden; Refs, die es nicht mehr gibt, zählen nicht.
+    """
+    only = [r for r in only if r in existing and r not in hidden]
+    if only:
+        return only
+    return ["--exclude=refs/stash", *(f"--exclude={r}" for r in hidden if r in existing), "--all"]
 
 
 def repo_root(path):
@@ -933,6 +953,17 @@ class RepoTab(QWidget):
         lp = QVBoxLayout(log_pane)
         lp.setContentsMargins(0, 0, 0, 0)
         lp.setSpacing(0)
+        self.graph_bar = QFrame(objectName="listHeader")
+        gb = QHBoxLayout(self.graph_bar)
+        gb.setContentsMargins(8, 4, 6, 4)
+        self.graph_label = QLabel(wordWrap=True)
+        reset = QPushButton("Filter zurücksetzen")
+        reset.clicked.connect(lambda: self.set_graph_filter([], []))
+        gb.addWidget(QLabel(pixmap=QIcon.fromTheme("view-filter").pixmap(16)))
+        gb.addWidget(self.graph_label, 1)
+        gb.addWidget(reset)
+        self.graph_bar.hide()
+        lp.addWidget(self.graph_bar)
         lp.addWidget(self.log_filter)
         lp.addWidget(self.log)
         history = QSplitter(Qt.Vertical)
@@ -1050,9 +1081,34 @@ class RepoTab(QWidget):
         new = new.strip()
         if ok and new and new != old:
             self.git("branch", "-m", old, new, check=True)
-            if self.last_rc == 0:  # Favorit wandert mit
+            if self.last_rc == 0:  # Favorit und Graph-Filter wandern mit
                 save_stars(self.repo, [f"branch:{new}" if x == f"branch:{old}" else x for x in load_stars(self.repo)])
+                ren = lambda refs: [f"refs/heads/{new}" if r == f"refs/heads/{old}" else r for r in refs]
+                only, hidden = self.graph_filter()
+                set_repo_value("graph_filter", self.repo, {"only": ren(only), "hidden": ren(hidden)})
             self.refresh()
+
+    def graph_filter(self):
+        """(nur_zeigen, ausgeblendet) als volle Ref-Namen für die Ansicht „Alle Commits“."""
+        gf = repo_value("graph_filter", self.repo, {})
+        return gf.get("only", []), gf.get("hidden", [])
+
+    def set_graph_filter(self, only, hidden):
+        set_repo_value("graph_filter", self.repo, {"only": only, "hidden": hidden} if only or hidden else None)
+        self.view = ("log", "--all", "all")  # Ergebnis gleich zeigen
+        self.refresh()
+
+    def toggle_graph(self, ref, which):
+        """Ref in „nur zeigen“ (which="only") oder „ausblenden“ (which="hidden") an-/abschalten."""
+        only, hidden = self.graph_filter()
+        target, other = (only, hidden) if which == "only" else (hidden, only)
+        if ref in target:
+            target.remove(ref)
+        else:
+            target.append(ref)
+            if ref in other:  # beides gleichzeitig ergibt keinen Sinn
+                other.remove(ref)
+        self.set_graph_filter(only, hidden)
 
     def toggle_star(self, kind, name):
         sid, stars = f"{kind}:{name}", load_stars(self.repo)
@@ -1070,8 +1126,12 @@ class RepoTab(QWidget):
                 "Nicht gemergt", f"„{name}“ enthält Commits, die nirgends gemergt sind.\n"
                                  "Trotzdem löschen? Diese Commits gehen dann verloren."):
             self.git("branch", "-D", name, check=True)
-        if not self.refs(f"refs/heads/{name}"):  # gelöscht: auch aus den Favoriten
+        if not self.refs(f"refs/heads/{name}"):  # gelöscht: auch aus Favoriten und Graph-Filter
             save_stars(self.repo, [x for x in load_stars(self.repo) if x != f"branch:{name}"])
+            only, hidden = self.graph_filter()
+            drop = lambda refs: [r for r in refs if r != f"refs/heads/{name}"]
+            set_repo_value("graph_filter", self.repo, {"only": drop(only), "hidden": drop(hidden)}
+                           if drop(only) or drop(hidden) else None)
         self.refresh()
 
     def delete_remote_branch(self, name):
@@ -1219,11 +1279,27 @@ class RepoTab(QWidget):
             return add(parent, leaf + suffix, key, icon, bold)
 
         add(t, f"Änderungen ({n_changes})", ("changes",), "document-edit")
-        add(t, "Alle Commits", ("log", "--all", "all"), "view-history")
+        all_item = add(t, "Alle Commits", ("log", "--all", "all"), "view-history")
 
         heads = self.refs("refs/heads", "%(HEAD)\t%(refname:short)\t%(upstream:track,nobracket)")
         remotes = [n for (n,) in self.refs("refs/remotes") if "/" in n and not n.endswith("/HEAD")]  # "origin" = origin/HEAD
         current = next((n for h, n, _ in heads if h == "*"), None)
+        only, hidden = self.graph_filter()
+        existing_refs = {f"refs/heads/{n}" for _, n, _ in heads} | {f"refs/remotes/{n}" for n in remotes}
+        if existing_refs & set(only + hidden):
+            all_item.setText(0, "Alle Commits (gefiltert)")
+            all_item.setIcon(0, QIcon.fromTheme("view-filter"))
+
+        def mark(item, kind, name):
+            """Filter-/Ausblenden-Symbol für Branches im Graph-Filter."""
+            ref = f"refs/heads/{name}" if kind == "branch" else f"refs/remotes/{name}"
+            if ref in only:
+                item.setIcon(0, QIcon.fromTheme("view-filter"))
+                item.setToolTip(0, "Im Graph-Filter: „Alle Commits“ zeigt nur gefilterte Branches")
+            elif ref in hidden:
+                item.setIcon(0, QIcon.fromTheme("view-hidden"))
+                item.setForeground(0, QColor(COLORS["dim"]))
+                item.setToolTip(0, "In „Alle Commits“ ausgeblendet")
 
         # Favoriten (Starred) oben, wie bei Fork; gelöschte Branches werden einfach nicht gezeigt
         existing = {f"branch:{n}" for _, n, _ in heads} | {f"remote:{n}" for n in remotes}
@@ -1232,18 +1308,18 @@ class RepoTab(QWidget):
             sec = node(t, "Favoriten", "Favoriten")
             for sid in stars:
                 kind, name = sid.split(":", 1)
-                add(sec, name, ("log", name, kind), "starred", bold=kind == "branch" and name == current)
+                mark(add(sec, name, ("log", name, kind), "starred", bold=kind == "branch" and name == current), kind, name)
 
         sec = node(t, "Branches", "Branches")
         for head, name, track in heads:
             track = track.replace("ahead ", "↑").replace("behind ", "↓").replace(",", "")
             current = head == "*"
-            add_path(sec, name, ("log", name, "branch"), "checkmark" if current else "vcs-branch",
-                     bold=current, suffix=f"  {track}" if track else "")
+            mark(add_path(sec, name, ("log", name, "branch"), "checkmark" if current else "vcs-branch",
+                          bold=current, suffix=f"  {track}" if track else ""), "branch", name)
 
         sec = node(t, "Remotes", "Remotes")
         for name in remotes:
-            add_path(sec, name, ("log", name, "remote"), "vcs-branch", first_icon="folder-cloud")
+            mark(add_path(sec, name, ("log", name, "remote"), "vcs-branch", first_icon="folder-cloud"), "remote", name)
 
         sec = node(t, "Tags", "Tags")
         for (name,) in self.refs("refs/tags"):
@@ -1342,6 +1418,12 @@ class RepoTab(QWidget):
                 starred = f"{kind}:{name}" in load_stars(self.repo)
                 add("Aus Favoriten entfernen" if starred else "Zu Favoriten hinzufügen",
                     lambda: self.toggle_star(kind, name))
+                ref = f"refs/heads/{name}" if kind == "branch" else f"refs/remotes/{name}"
+                only, hidden = self.graph_filter()
+                add("Aus dem Graph-Filter nehmen" if ref in only else "Im Graph filtern (nur gefilterte zeigen)",
+                    lambda: self.toggle_graph(ref, "only"))
+                add("Im Graph wieder einblenden" if ref in hidden else "Im Graph ausblenden",
+                    lambda: self.toggle_graph(ref, "hidden"))
             if kind == "branch":
                 add("Umbenennen…", lambda: self.rename_branch(name))
                 add("Pushen", lambda: self.push(name))
@@ -1368,13 +1450,15 @@ class RepoTab(QWidget):
             self.stash_view.setHtml(patch_html(self.git("stash", "show", "-p", "-u", ref)))
             return
         self.stack.setCurrentIndex(1)
+        self.graph_bar.hide()  # nur in „Alle Commits“ mit aktivem Graph-Filter sichtbar
+        keep = self.log.currentItem() and self.log.currentItem().data(0, HASH_ROLE)
         self.log.clear()
         self.commit_info.clear()
         self.commit_view.clear()
         head = self.git("rev-parse", "HEAD").strip()
         out = self.git("log", "--date-order", "--decorate=full", "-n", "1000", "--date=format:%d.%m.%Y %H:%M",
                        "--format=%H%x1f%P%x1f%h%x1f%s%x1f%an%x1f%ad%x1f%D",
-                       *(["--exclude=refs/stash", "--all"] if self.view[1] == "--all" else [self.view[1]]), "--")
+                       *(self.all_commits_args() if self.view[1] == "--all" else [self.view[1]]), "--")
         commits = [line.split("\x1f") for line in out.splitlines()]
         graph = build_graph([(c[0], c[1].split()) for c in commits])
         items = []
@@ -1393,7 +1477,26 @@ class RepoTab(QWidget):
                 it.setForeground(col, QColor(COLORS["dim"]) if full != head else QColor(COLORS["text"]))
             items.append(it)
         self.log.addTopLevelItems(items)
+        # zuvor gewählten Commit wieder auswählen, sonst den ersten – damit die Details nicht leer sind
+        again = next((it for it in items if it.data(0, HASH_ROLE) == keep), items[0] if items else None)
+        if again:
+            self.log.setCurrentItem(again)
         self.apply_log_filter()
+
+    def all_commits_args(self):
+        """Refs für „Alle Commits“ inkl. Graph-Filter; füllt nebenbei die Hinweisleiste über dem Verlauf."""
+        existing = set(self.git("for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes").split())
+        only, hidden = self.graph_filter()
+        short = lambda refs: ", ".join(r.removeprefix("refs/heads/").removeprefix("refs/remotes/")
+                                       for r in refs if r in existing)
+        parts = []
+        if short(only):
+            parts.append(f"Graph zeigt nur: <b>{html.escape(short(only))}</b>")
+        if short(hidden):
+            parts.append(f"Ausgeblendet: <b>{html.escape(short(hidden))}</b>")
+        self.graph_label.setText(" &nbsp;·&nbsp; ".join(parts))
+        self.graph_bar.setVisible(bool(parts))
+        return graph_args(only, hidden, existing)
 
     def apply_log_filter(self, *_):
         """Blendet Commits aus, deren Tags/Branches, Nachricht, Autor und Hash nicht zum Suchtext passen."""
@@ -2525,6 +2628,11 @@ if __name__ == "__main__":
         g = group_repos(["/x/zeta", "/x/Alpha", "/y/beta", "/y/gamma"], ["Arbeit"],
                         {"/y/beta": "Arbeit", "/y/gamma": "Gelöscht"})
         assert g == [("Arbeit", ["/y/beta"]), (None, ["/x/Alpha", "/y/gamma", "/x/zeta"])]
+        ex = {"refs/heads/main", "refs/heads/dev", "refs/remotes/origin/main"}
+        assert graph_args([], [], ex) == ["--exclude=refs/stash", "--all"]
+        assert graph_args(["refs/heads/dev", "refs/heads/weg"], [], ex) == ["refs/heads/dev"]
+        assert graph_args(["refs/heads/weg"], ["refs/remotes/origin/main"], ex) == [
+            "--exclude=refs/stash", "--exclude=refs/remotes/origin/main", "--all"]
         print("ok")
         sys.exit(0)
     app = QApplication(sys.argv)

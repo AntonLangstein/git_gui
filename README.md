@@ -10,6 +10,7 @@ die für alles das `git`-Kommandozeilenprogramm aufruft.
   („Commits pro Monat“ je Autor), eigene Ordner (per Rechtsklick oder Drag & Drop), Festplatte nach Repos durchsuchen
 - **Verlauf** mit gezeichnetem Commit-Graph, farbigen Branch-/Tag-Labels und Autor-Avataren (Initialen);
   Suchfeld filtert nach Tag, Branch, Nachricht, Autor oder Hash
+- **Graph-Filter**: „Alle Commits“ auf ausgewählte Branches beschränken oder einzelne Branches ausblenden
 - **Commit-Details**: Autor, Committer, Parents, Dateiliste und Diff; bei Merges umschaltbar zwischen den Parents;
   Dateibaum mit allen Dateien zum Stand des Commits
 - **Lokale Änderungen**: Dateien, einzelne Hunks oder einzelne Zeilen stagen/unstagen, Änderungen verwerfen,
