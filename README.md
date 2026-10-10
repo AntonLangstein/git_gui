@@ -19,7 +19,8 @@ die für alles das `git`-Kommandozeilenprogramm aufruft.
 - **Stashes**: anlegen, anwenden, poppen, löschen, Inhalt ansehen
 - **Konflikte lösen** bei Merge, Rebase, Cherry-Pick und Revert: Block für Block mit editierbarem Ergebnis,
   Abbrechen/Fortsetzen über ein Banner
-- Seitenleiste mit Filter, Branch-Ordnern (`feature/…`) und Ahead/Behind-Anzeige
+- Seitenleiste mit Filter, Favoriten-Branches (wie „Starred“ in Fork), Branch-Ordnern (`feature/…`) und
+  Ahead/Behind-Anzeige
 - Dunkles Theme, Terminal im Repo-Ordner öffnen
 
 ## Voraussetzungen

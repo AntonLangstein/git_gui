@@ -664,6 +664,27 @@ class ConflictDialog(QDialog):
         self.run(("add", "--", self.path))
 
 
+def load_stars(repo):
+    """Favoriten (Starred) eines Repos als ["branch:main", "remote:origin/dev", …]."""
+    try:
+        return json.loads(QSettings("git_gui", "git_gui").value("starred", "{}")).get(repo, [])
+    except ValueError:
+        return []
+
+
+def save_stars(repo, stars):
+    settings = QSettings("git_gui", "git_gui")
+    try:
+        data = json.loads(settings.value("starred", "{}"))
+    except ValueError:
+        data = {}
+    if stars:
+        data[repo] = stars
+    else:
+        data.pop(repo, None)
+    settings.setValue("starred", json.dumps(data))
+
+
 def repo_root(path):
     """Wurzel des Git-Repos, in dem `path` liegt, oder None."""
     r = subprocess.run(["git", "-C", path, "rev-parse", "--show-toplevel"], capture_output=True, text=True)
@@ -1013,8 +1034,17 @@ class RepoTab(QWidget):
 
     def rename_branch(self, old):
         new, ok = QInputDialog.getText(self, "Branch umbenennen", f"Neuer Name für „{old}“:", text=old)
-        if ok and new.strip() and new.strip() != old:
-            self.act("branch", "-m", old, new.strip())
+        new = new.strip()
+        if ok and new and new != old:
+            self.git("branch", "-m", old, new, check=True)
+            if self.last_rc == 0:  # Favorit wandert mit
+                save_stars(self.repo, [f"branch:{new}" if x == f"branch:{old}" else x for x in load_stars(self.repo)])
+            self.refresh()
+
+    def toggle_star(self, kind, name):
+        sid, stars = f"{kind}:{name}", load_stars(self.repo)
+        save_stars(self.repo, [x for x in stars if x != sid] if sid in stars else stars + [sid])
+        self.refresh()
 
     def confirm(self, title, text):
         return QMessageBox.question(self, title, text) == QMessageBox.Yes
@@ -1027,6 +1057,8 @@ class RepoTab(QWidget):
                 "Nicht gemergt", f"„{name}“ enthält Commits, die nirgends gemergt sind.\n"
                                  "Trotzdem löschen? Diese Commits gehen dann verloren."):
             self.git("branch", "-D", name, check=True)
+        if not self.refs(f"refs/heads/{name}"):  # gelöscht: auch aus den Favoriten
+            save_stars(self.repo, [x for x in load_stars(self.repo) if x != f"branch:{name}"])
         self.refresh()
 
     def delete_remote_branch(self, name):
@@ -1176,17 +1208,29 @@ class RepoTab(QWidget):
         add(t, f"Änderungen ({n_changes})", ("changes",), "document-edit")
         add(t, "Alle Commits", ("log", "--all", "all"), "view-history")
 
+        heads = self.refs("refs/heads", "%(HEAD)\t%(refname:short)\t%(upstream:track,nobracket)")
+        remotes = [n for (n,) in self.refs("refs/remotes") if "/" in n and not n.endswith("/HEAD")]  # "origin" = origin/HEAD
+        current = next((n for h, n, _ in heads if h == "*"), None)
+
+        # Favoriten (Starred) oben, wie bei Fork; gelöschte Branches werden einfach nicht gezeigt
+        existing = {f"branch:{n}" for _, n, _ in heads} | {f"remote:{n}" for n in remotes}
+        stars = sorted((x for x in load_stars(self.repo) if x in existing), key=lambda x: x.split(":", 1)[1].lower())
+        if stars:
+            sec = node(t, "Favoriten", "Favoriten")
+            for sid in stars:
+                kind, name = sid.split(":", 1)
+                add(sec, name, ("log", name, kind), "starred", bold=kind == "branch" and name == current)
+
         sec = node(t, "Branches", "Branches")
-        for head, name, track in self.refs("refs/heads", "%(HEAD)\t%(refname:short)\t%(upstream:track,nobracket)"):
+        for head, name, track in heads:
             track = track.replace("ahead ", "↑").replace("behind ", "↓").replace(",", "")
             current = head == "*"
             add_path(sec, name, ("log", name, "branch"), "checkmark" if current else "vcs-branch",
                      bold=current, suffix=f"  {track}" if track else "")
 
         sec = node(t, "Remotes", "Remotes")
-        for (name,) in self.refs("refs/remotes"):
-            if "/" in name and not name.endswith("/HEAD"):  # "origin" = origin/HEAD
-                add_path(sec, name, ("log", name, "remote"), "vcs-branch", first_icon="folder-cloud")
+        for name in remotes:
+            add_path(sec, name, ("log", name, "remote"), "vcs-branch", first_icon="folder-cloud")
 
         sec = node(t, "Tags", "Tags")
         for (name,) in self.refs("refs/tags"):
@@ -1281,6 +1325,10 @@ class RepoTab(QWidget):
                     add(f"„{current}“ auf „{name}“ rebasen", lambda: self.act("rebase", name))
                 menu.addSeparator()
             add("Neuer Branch von hier…", lambda: self.new_branch(name))
+            if kind in ("branch", "remote"):
+                starred = f"{kind}:{name}" in load_stars(self.repo)
+                add("Aus Favoriten entfernen" if starred else "Zu Favoriten hinzufügen",
+                    lambda: self.toggle_star(kind, name))
             if kind == "branch":
                 add("Umbenennen…", lambda: self.rename_branch(name))
                 add("Pushen", lambda: self.push(name))
