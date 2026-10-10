@@ -205,6 +205,7 @@ def draw_background(painter, opt, index, delegate):
 
 class CommitDelegate(QStyledItemDelegate):
     """Graph, Branch-/Tag-Labels und Commit-Nachricht in einer Spalte, wie bei Fork."""
+    filtering = False  # beim Filtern fehlen Zeilen: dann nur Punkte statt zerrissener Linien
 
     def paint(self, painter, opt, index):
         text = draw_background(painter, opt, index, self)
@@ -218,7 +219,7 @@ class CommitDelegate(QStyledItemDelegate):
             lx = lambda lane: r.left() + 4 + LANE_W * lane + LANE_W / 2
             ly = lambda f: r.top() + r.height() * f
             painter.setBrush(Qt.NoBrush)
-            for l1, y1, l2, y2, lane in segs:
+            for l1, y1, l2, y2, lane in ([] if self.filtering else segs):
                 path = QPainterPath(QPointF(lx(l1), ly(y1)))
                 if l1 == l2:
                     path.lineTo(lx(l2), ly(y2))
@@ -231,7 +232,7 @@ class CommitDelegate(QStyledItemDelegate):
             painter.setBrush(QColor(LANE_COLORS[color % len(LANE_COLORS)]))
             rad = 3.5 if merge else 5
             painter.drawEllipse(QPointF(lx(col), ly(.5)), rad, rad)
-            used = max([col] + [max(s[0], s[2]) for s in segs]) + 1  # Text direkt hinter dem Graph
+            used = max([col] + [max(s[0], s[2]) for s in ([] if self.filtering else segs)]) + 1  # Text hinter dem Graph
             x = r.left() + 4 + LANE_W * used + 6
             lane_color = QColor(LANE_COLORS[color % len(LANE_COLORS)])
         else:
@@ -883,7 +884,11 @@ class RepoTab(QWidget):
         # Seite 1: Verlauf oben, Commit-Details unten
         self.log = QTreeWidget(objectName="log", rootIsDecorated=False, uniformRowHeights=True)
         self.log.setHeaderLabels(["Beschreibung", "Autor", "Commit", "Datum"])
-        self.log.setItemDelegateForColumn(0, CommitDelegate(self.log))
+        self.commit_delegate = CommitDelegate(self.log)
+        self.log.setItemDelegateForColumn(0, self.commit_delegate)
+        self.log_filter = QLineEdit(objectName="filter", clearButtonEnabled=True,
+                                    placeholderText="Verlauf filtern: Tag, Branch, Nachricht, Autor oder Hash (Strg+F)")
+        self.log_filter.textChanged.connect(self.apply_log_filter)
         self.log.setItemDelegateForColumn(1, AuthorDelegate(self.log))
         header = self.log.header()
         header.setStretchLastSection(False)
@@ -924,8 +929,14 @@ class RepoTab(QWidget):
         self.detail.addTab(tree_split, "Dateibaum")
         self.detail.currentChanged.connect(lambda _i: self.fill_tree())
         self.detail_hash, self.detail_status, self.tree_hash = None, {}, None
+        log_pane = QWidget()
+        lp = QVBoxLayout(log_pane)
+        lp.setContentsMargins(0, 0, 0, 0)
+        lp.setSpacing(0)
+        lp.addWidget(self.log_filter)
+        lp.addWidget(self.log)
         history = QSplitter(Qt.Vertical)
-        history.addWidget(self.log)
+        history.addWidget(log_pane)
         history.addWidget(self.detail)
         history.setSizes([420, 380])
 
@@ -956,6 +967,8 @@ class RepoTab(QWidget):
         self.staged.itemDoubleClicked.connect(lambda it: self.act("restore", "--staged", "--", it.text()))
         # nur im sichtbaren Tab aktiv, sonst wäre das Kürzel mehrdeutig
         QShortcut(QKeySequence("Ctrl+Return"), self, self.commit, context=Qt.WidgetWithChildrenShortcut)
+        QShortcut(QKeySequence("Ctrl+F"), self, context=Qt.WidgetWithChildrenShortcut,
+                  activated=lambda: (self.log_filter if self.stack.currentIndex() == 1 else self.filter).setFocus())
 
         self.refresh()
 
@@ -1380,6 +1393,28 @@ class RepoTab(QWidget):
                 it.setForeground(col, QColor(COLORS["dim"]) if full != head else QColor(COLORS["text"]))
             items.append(it)
         self.log.addTopLevelItems(items)
+        self.apply_log_filter()
+
+    def apply_log_filter(self, *_):
+        """Blendet Commits aus, deren Tags/Branches, Nachricht, Autor und Hash nicht zum Suchtext passen."""
+        # ponytail: durchsucht nur die geladenen 1000 Commits; ältere Tags bräuchten `git log --grep`/Ref-Suche
+        text = self.log_filter.text().strip().lower()
+        self.commit_delegate.filtering = bool(text)
+        shown = 0
+        for i in range(self.log.topLevelItemCount()):
+            it = self.log.topLevelItem(i)
+            names = " ".join(name for name, _kind, _synced in it.data(0, REFS_ROLE) or [])
+            hay = f"{names} {it.text(0)} {it.text(1)} {it.data(0, HASH_ROLE)}".lower()
+            match = not text or text in hay
+            it.setHidden(not match)
+            shown += match
+        self.log_filter.setToolTip(f"{shown} von {self.log.topLevelItemCount()} Commits" if text else "")
+        current = self.log.currentItem()
+        if text and (current is None or current.isHidden()):  # Auswahl auf den ersten Treffer
+            first = next((self.log.topLevelItem(i) for i in range(self.log.topLevelItemCount())
+                          if not self.log.topLevelItem(i).isHidden()), None)
+            self.log.setCurrentItem(first)
+        self.log.viewport().update()
 
     def show_commit(self, item, parent=0):
         """Details eines Commits; bei Merges die Änderungen gegenüber Parent Nr. `parent`."""

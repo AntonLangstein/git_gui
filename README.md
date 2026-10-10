@@ -8,7 +8,8 @@ die für alles das `git`-Kommandozeilenprogramm aufruft.
 - **Mehrere Repositories** in Tabs; offene Tabs werden laufend gemerkt und beim nächsten Start wiederhergestellt
 - **Repository-Verwaltung** im „Neuer Tab“: zuletzt geöffnete und bekannte Repos, Übersicht und Statistik
   („Commits pro Monat“ je Autor), eigene Ordner (per Rechtsklick oder Drag & Drop), Festplatte nach Repos durchsuchen
-- **Verlauf** mit gezeichnetem Commit-Graph, farbigen Branch-/Tag-Labels und Autor-Avataren (Initialen)
+- **Verlauf** mit gezeichnetem Commit-Graph, farbigen Branch-/Tag-Labels und Autor-Avataren (Initialen);
+  Suchfeld filtert nach Tag, Branch, Nachricht, Autor oder Hash
 - **Commit-Details**: Autor, Committer, Parents, Dateiliste und Diff; bei Merges umschaltbar zwischen den Parents;
   Dateibaum mit allen Dateien zum Stand des Commits
 - **Lokale Änderungen**: Dateien, einzelne Hunks oder einzelne Zeilen stagen/unstagen, Änderungen verwerfen,
@@ -57,6 +58,7 @@ python3 git_gui.py ~/repo1 ~/repo2 # bestimmte Repositories öffnen
 | Tab schließen / wechseln | Strg+W / Strg+Tab, Strg+Umschalt+Tab |
 | Aktualisieren | F5 (passiert auch beim Tab-Wechsel) |
 | Committen | Enter im Betreff oder Strg+Enter |
+| Verlauf filtern | Strg+F |
 | Branch auschecken | Doppelklick in der Seitenleiste |
 | Branch-Aktionen | Rechtsklick auf Branch, Remote-Branch, Tag oder Stash |
 | Datei stagen | Doppelklick, „Stagen“-Knopf oder Rechtsklick |
