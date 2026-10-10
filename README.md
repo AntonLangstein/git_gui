@@ -9,16 +9,20 @@ die für alles das `git`-Kommandozeilenprogramm aufruft.
 - **Repository-Verwaltung** im „Neuer Tab“: zuletzt geöffnete und bekannte Repos, Übersicht und Statistik
   („Commits pro Monat“ je Autor), eigene Ordner (per Rechtsklick oder Drag & Drop), Festplatte nach Repos durchsuchen
 - **Verlauf** mit gezeichnetem Commit-Graph, farbigen Branch-/Tag-Labels und Autor-Avataren (Initialen);
-  Suchfeld filtert nach Tag, Branch, Nachricht, Autor oder Hash
+  lädt beim Scrollen weitere Commits nach; Suchfeld filtert nach Tag, Branch, Nachricht, Autor oder Hash –
+  auch in älteren, noch nicht geladenen Commits
 - **Graph-Filter**: „Alle Commits“ auf ausgewählte Branches beschränken oder einzelne Branches ausblenden
-- **Cherry-Pick und Revert** per Rechtsklick im Verlauf, auch von Merge-Commits
+- **Commit-Menü** im Verlauf: Cherry-Pick, Revert, Branch/Tag hier erstellen, Commit auschecken,
+  Branch zurücksetzen (soft/mixed/hard)
 - **Commit-Details**: Autor, Committer, Parents, Dateiliste und Diff; bei Merges umschaltbar zwischen den Parents;
   Dateibaum mit allen Dateien zum Stand des Commits
 - **Lokale Änderungen**: Dateien, einzelne Hunks oder einzelne Zeilen stagen/unstagen, Änderungen verwerfen,
   Commit mit Betreff, Beschreibung und Amend
+- **Diffs** mit Syntaxfarben, hervorgehobenen Wort-Änderungen, optional nebeneinander und ohne Leerzeichen-Änderungen
 - **Branches**: wechseln, anlegen, umbenennen, löschen, mergen, rebasen – per Doppelklick oder Rechtsklick in der Seitenleiste
 - **Remotes**: Fetch, Pull, Push im Hintergrund (das Fenster bleibt bedienbar), Upstream beim ersten Push,
-  Remote-Branches löschen
+  Remote-Branches löschen; Zähler an Pull/Push und automatischer Fetch alle 5 Minuten
+- **Aktualisiert sich selbst**, wenn im Terminal committet oder ein Branch gewechselt wird
 - **Stashes**: anlegen, anwenden, poppen, löschen, Inhalt ansehen
 - **Konflikte lösen** bei Merge, Rebase, Cherry-Pick und Revert: Block für Block mit editierbarem Ergebnis,
   Abbrechen/Fortsetzen über ein Banner
@@ -30,12 +34,13 @@ die für alles das `git`-Kommandozeilenprogramm aufruft.
 
 - Python 3.10 oder neuer (entwickelt mit 3.14)
 - [PySide6](https://pypi.org/project/PySide6/) (entwickelt mit 6.11)
+- optional [Pygments](https://pygments.org/) für Syntaxfarben im Diff (`python-pygments`)
 - `git` (entwickelt mit 2.55)
 
 Arch / CachyOS:
 
 ```bash
-sudo pacman -S pyside6 git
+sudo pacman -S pyside6 git python-pygments
 ```
 
 Sonst per pip:
@@ -66,7 +71,8 @@ python3 git_gui.py ~/repo1 ~/repo2 # bestimmte Repositories öffnen
 | Datei stagen | Doppelklick, „Stagen“-Knopf oder Rechtsklick |
 | Hunk stagen | „Hunk stagen“ im Diff-Kopf |
 | Zeilen stagen | Zeilen im Diff anklicken (Umschalt+Klick für Bereiche), dann „n Zeilen stagen“ |
-| Cherry-Pick, Revert, Hash kopieren | Rechtsklick auf einen Commit im Verlauf |
+| Cherry-Pick, Revert, Reset, Tag … | Rechtsklick auf einen Commit im Verlauf |
+| Diff-Ansicht umschalten | Menü „Ansicht“ oder Knöpfe über dem Diff |
 | Konflikt lösen | Doppelklick auf die Datei unter „Konflikte“ |
 
 ## Selbsttest
@@ -79,10 +85,10 @@ python3 git_gui.py --selftest
 
 ## Bekannte Grenzen
 
+- Git-Meldungen in der Statusleiste sind englisch; Fehler werden auf Deutsch erklärt.
 - Passwortabfragen (z. B. HTTPS ohne gespeicherte Zugangsdaten) werden nicht unterstützt – Git bricht dann mit einer
   Fehlermeldung ab. SSH-Agent oder ein Credential-Helper funktionieren.
 - Sehr große Diffs werden langsam dargestellt.
-- Der Verlauf zeigt die letzten 1000 Commits.
 - Das Theme ist immer dunkel.
 
 Geplante Verbesserungen stehen in der [ROADMAP](ROADMAP.md).

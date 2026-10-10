@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Minimal git GUI im Stil von Fork. Usage: git_gui.py [repo ...]"""
+import difflib
 import html
+import itertools
 import json
 import os
 import re
@@ -9,7 +11,14 @@ import subprocess
 import sys
 import time
 
-from PySide6.QtCore import QPointF, QProcess, QProcessEnvironment, QRectF, QSettings, Qt, QTimer, QUrl, Signal
+try:  # Syntaxfarben im Diff sind optional
+    from pygments.lexers import get_lexer_for_filename
+    from pygments.styles import get_style_by_name
+    from pygments.util import ClassNotFound
+    SYNTAX_STYLE = get_style_by_name("one-dark")
+except ImportError:
+    get_lexer_for_filename = None
+from PySide6.QtCore import QFileSystemWatcher, QPointF, QProcess, QProcessEnvironment, QRectF, QSettings, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QAction, QColor, QCursor, QDesktopServices, QFont, QIcon, QPixmap, QKeySequence, QPainter, QPainterPath, QPalette,
     QPen, QShortcut,
@@ -91,7 +100,43 @@ def setup_app(app):
 
 # Netzwerk-Ops sollen fehlschlagen statt unsichtbar auf eine Passwortabfrage zu warten,
 # und Befehle wie `rebase --continue` dürfen keinen Editor öffnen.
-GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_EDITOR": "true"}
+# Git antwortet einheitlich auf Englisch (für die Fehlererkennung in friendly_error), und `git status`
+# schreibt den Index nicht neu (GIT_OPTIONAL_LOCKS) – sonst löst jedes Neuladen die Dateiüberwachung erneut aus.
+GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_EDITOR": "true", "LC_ALL": "C.UTF-8",
+           "GIT_OPTIONAL_LOCKS": "0"}
+
+# Bekannte Git-Fehler -> verständliche Meldung; None = Konflikt, den das Banner schon erklärt
+ERROR_HINTS = [
+    (("CONFLICT", "could not apply", "after resolving the conflicts", "Automatic merge failed"), None),
+    (("[rejected]", "fetch first", "non-fast-forward"),
+     "Push abgelehnt: Auf dem Remote gibt es Commits, die du lokal noch nicht hast.\nErst pullen, dann erneut pushen."),
+    (("would be overwritten by", "Please commit your changes or stash them"),
+     "Deine lokalen Änderungen würden dabei überschrieben.\nErst committen oder stashen, dann erneut versuchen."),
+    (("you need to resolve your current index first", "unmerged files", "Unmerged paths"),
+     "Es gibt noch ungelöste Konflikte. Erst lösen, dann erneut versuchen."),
+    (("Could not resolve host", "Connection timed out", "Network is unreachable", "Connection refused"),
+     "Keine Verbindung zum Server. Internetverbindung und Remote-Adresse prüfen."),
+    (("terminal prompts disabled", "could not read Username", "Authentication failed"),
+     "Git braucht Zugangsdaten (Benutzername/Token).\nRichte einen Credential-Helper ein oder nutze SSH."),
+    (("Permission denied (publickey)", "Could not read from remote repository", "Repository not found",
+      "does not appear to be a git repository"),
+     "Kein Zugriff auf das Remote-Repository.\nStimmen Adresse und Zugangsrechte (z.B. SSH-Schlüssel)?"),
+    (("There is no tracking information", "has no upstream branch"),
+     "Der Branch hat noch kein Gegenstück auf dem Remote.\nErst pushen – das legt es an."),
+    (("nothing to commit", "nothing added to commit"), "Es gibt nichts zu committen."),
+    (("already exists",), "Ein Branch oder Tag mit diesem Namen gibt es schon."),
+    (("is not a valid branch name", "not a valid tag name", "is not a valid ref name"),
+     "Ungültiger Name. Keine Leerzeichen und keine Zeichen wie ~ ^ : ? * [ \\ verwenden."),
+    (("is already checked out at",), "Dieser Branch ist schon in einem anderen Arbeitsverzeichnis (Worktree) ausgecheckt."),
+]
+
+
+def friendly_error(output):
+    """Gits Fehlerausgabe -> (Meldung, übersetzt?); Meldung None heißt: Konflikt, kein Dialog nötig."""
+    for patterns, message in ERROR_HINTS:
+        if any(p in output for p in patterns):
+            return message, True
+    return output.strip() or "Unbekannter Fehler.", False
 
 OPERATIONS = {"merge": "Merge", "rebase": "Rebase", "cherry-pick": "Cherry-Pick", "revert": "Revert"}
 CONFLICT_CODES = {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
@@ -101,7 +146,9 @@ LANE_W = 14
 STATUS_COLORS = {"A": "#57ab5a", "M": "#c69026", "D": "#e5534b", "R": "#4c9aff", "C": "#4c9aff"}
 
 # Datenrollen der Verlaufs-Einträge
-GRAPH_ROLE, REFS_ROLE, HASH_ROLE, HEAD_ROLE = (Qt.ItemDataRole.UserRole + i for i in range(4))
+GRAPH_ROLE, REFS_ROLE, HASH_ROLE, HEAD_ROLE, EXTRA_ROLE = (Qt.ItemDataRole.UserRole + i for i in range(5))
+LOG_PAGE = 1000  # so viele Commits werden auf einmal geladen; beim Scrollen ans Ende kommen weitere dazu
+LOG_FORMAT = ["--date=format:%d.%m.%Y %H:%M", "--format=%H%x1f%P%x1f%h%x1f%s%x1f%an%x1f%ad%x1f%D"]
 NODE_ROLE = Qt.ItemDataRole.UserRole + 10  # Pfad von Abschnitten/Ordnern in der Seitenleiste
 
 
@@ -332,52 +379,187 @@ def split_hunks(diff):
     return "".join(head), ["".join(h) for h in hunks]
 
 
-def diff_html(diff, hunk_action=None, selected=(), selectable=False):
-    """Diff -> HTML mit Zeilennummern alt/neu wie bei Fork.
+FANCY_LIMIT = 4000  # ab so vielen Diff-Zeilen ohne Syntaxfarben/Wort-Diff, damit es schnell bleibt
+TOKEN = re.compile(r"\w+|\s+|[^\w\s]")
+_lexers = {}
+
+
+def lexer_for(path):
+    """Pygments-Lexer passend zum Dateinamen (zwischengespeichert) oder None."""
+    if not path or get_lexer_for_filename is None:
+        return None
+    key = os.path.splitext(path)[1] or os.path.basename(path)
+    if key not in _lexers:
+        try:
+            _lexers[key] = get_lexer_for_filename(path, stripnl=False, ensurenl=False)
+        except ClassNotFound:
+            _lexers[key] = None
+    return _lexers[key]
+
+
+def syntax_colors(text, lexer):
+    """Vordergrundfarbe pro Zeichen (None = Standard)."""
+    colors = [None] * len(text)
+    if lexer is None:
+        return colors
+    # ponytail: jede Zeile einzeln gelext – mehrzeilige Strings/Kommentare werden nicht erkannt
+    pos = 0
+    for ttype, value in lexer.get_tokens(text):
+        color = SYNTAX_STYLE.style_for_token(ttype)["color"]
+        for k in range(pos, min(pos + len(value), len(text))):
+            colors[k] = f"#{color}" if color else None
+        pos += len(value)
+    return colors
+
+
+def word_marks(a, b):
+    """Zeichenbereiche, in denen sich zwei ähnliche Zeilen unterscheiden: ([(von, bis)] in a, [...] in b)."""
+    ta, tb = TOKEN.findall(a), TOKEN.findall(b)
+    sm = difflib.SequenceMatcher(None, ta, tb, autojunk=False)
+    if sm.ratio() < 0.4:  # völlig verschieden: nichts hervorheben, sonst wird alles bunt
+        return [], []
+    oa = [0, *itertools.accumulate(map(len, ta))]
+    ob = [0, *itertools.accumulate(map(len, tb))]
+    ma, mb = [], []
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op != "equal":
+            if i2 > i1:
+                ma.append((oa[i1], oa[i2]))
+            if j2 > j1:
+                mb.append((ob[j1], ob[j2]))
+    return ma, mb
+
+
+def hunk_marks(lines):
+    """Wort-Unterschiede für Blöcke „-…“ direkt gefolgt von „+…“, paarweise: {zeilenindex: marks}."""
+    marks, i = {}, 0
+    while i < len(lines):
+        if lines[i][:1] != "-":
+            i += 1
+            continue
+        j = i
+        while j < len(lines) and lines[j][:1] == "-":
+            j += 1
+        k = j
+        while k < len(lines) and lines[k][:1] == "+":
+            k += 1
+        for a, b in zip(range(i, j), range(j, k)):
+            marks[a], marks[b] = word_marks(lines[a][1:], lines[b][1:])
+        i = max(k, j)
+    return marks
+
+
+def code_html(text, lexer=None, marks=(), mark_bg=None):
+    """Eine Code-Zeile als HTML: Syntaxfarben im Vordergrund, geänderte Wörter mit kräftigerem Hintergrund."""
+    fg = syntax_colors(text, lexer)
+    marked = [False] * len(text)
+    for start, end in marks:
+        for k in range(start, min(end, len(text))):
+            marked[k] = True
+    out, k = [], 0
+    while k < len(text):
+        j = k
+        while j < len(text) and fg[j] == fg[k] and marked[j] == marked[k]:
+            j += 1
+        style = (f"color:{fg[k]};" if fg[k] else "") + (f"background:{mark_bg};" if marked[k] else "")
+        chunk = html.escape(text[k:j])
+        out.append(f"<span style='{style}'>{chunk}</span>" if style else chunk)
+        k = j
+    return "".join(out) or " "
+
+
+ADD_BG, DEL_BG, ADD_SEL, DEL_SEL = "#1e3a26", "#46252a", "#2f6b40", "#7a3038"
+ADD_MARK, DEL_MARK, EMPTY_BG = "#2f7a45", "#8a3a40", "#262629"
+
+
+def diff_html(diff, hunk_action=None, selected=(), selectable=False, path=None, split=False):
+    """Diff einer Datei -> HTML wie bei Fork: Zeilennummern, Syntaxfarben, Wort-Diff; optional nebeneinander.
 
     hunk_action = Linktext im Hunk-Kopf; selectable = +/- Zeilen sind auswählbar (Kästchen als Hinweis),
-    selected = ausgewählte Zeilen als {(hunk, zeile)}.
+    selected = ausgewählte Zeilen als {(hunk, zeile)}; split = alt | neu nebeneinander (ohne Zeilenauswahl).
     Rückgabe (html, rowmap): rowmap[Tabellenzeile] = (hunk, zeile) bzw. None, für Klicks auf ganze Zeilen.
     """
     _, hunks = split_hunks(diff)
     e = html.escape
     if not hunks:  # z.B. Binärdatei oder leer
         return f"<pre style='color:{COLORS['dim']}'>{e(diff) or 'Keine Änderungen.'}</pre>", []
+    fancy = diff.count("\n") < FANCY_LIMIT
+    lexer = lexer_for(path) if fancy else None
     rows, rowmap = [], []
     box = lambda on: (f"<span style='color:{COLORS['accent'] if on else '#6a6a6a'}'>{'☑' if on else '☐'}</span>")
+    num = lambda n: f"<td width='44' align='right' style='color:#6a6a6a'>{n}&nbsp;</td>"
+    wrap = "pre-wrap" if split else "pre"
     # ponytail: sehr große Diffs werden als HTML langsam; bei Bedarf ab x Zeilen kürzen
     for h, hunk in enumerate(hunks):
         lines = hunk.splitlines()
         m = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)", lines[0])
         old, new = (int(m[1]), int(m[2])) if m else (0, 0)
+        marks = hunk_marks(lines) if fancy else {}
         link = (f"<a href='hunk:{h}' style='color:{COLORS['accent']}; text-decoration:none'>{hunk_action}</a>"
                 if hunk_action else "")
         rowmap.append(None)
-        rows.append(f"<tr bgcolor='#2c3340'><td width='18'></td><td width='44'></td><td width='44'></td>"
-                    f"<td style='color:{COLORS['dim']}'>{e(lines[0])}</td><td align='right'>{link}&nbsp;</td></tr>")
+        head = f"<td style='color:{COLORS['dim']}'{' colspan=2' if split else ''}>{e(lines[0])}</td>"
+        lead = "<td width='44'></td>" if split else "<td width='18'></td><td width='44'></td><td width='44'></td>"
+        rows.append(f"<tr bgcolor='#2c3340'>{lead}{head}<td align='right'>{link}&nbsp;</td></tr>")
+
+        def code(i, mark_bg):
+            return code_html(lines[i][1:], lexer, marks.get(i, ()), mark_bg)
+
+        if split:
+            i = 1
+            while i < len(lines):
+                kind = lines[i][:1]
+                if kind in ("-", "+"):  # Block entfernter Zeilen neben Block hinzugefügter Zeilen
+                    j = i
+                    while j < len(lines) and lines[j][:1] == "-":
+                        j += 1
+                    k = j
+                    while k < len(lines) and lines[k][:1] == "+":
+                        k += 1
+                    for a, b in itertools.zip_longest(range(i, j), range(j, k)):
+                        left = (f"{num(old)}<td bgcolor='{DEL_BG}' width='50%' style='white-space:{wrap}'>"
+                                f"{code(a, DEL_MARK)}</td>") if a is not None else f"{num('')}<td bgcolor='{EMPTY_BG}'></td>"
+                        right = (f"{num(new)}<td bgcolor='{ADD_BG}' width='50%' style='white-space:{wrap}'>"
+                                 f"{code(b, ADD_MARK)}</td>") if b is not None else f"{num('')}<td bgcolor='{EMPTY_BG}'></td>"
+                        old += a is not None
+                        new += b is not None
+                        rowmap.append(None)
+                        rows.append(f"<tr>{left}{right}</tr>")
+                    i = max(k, j)
+                    continue
+                if kind != "\\":  # Kontextzeile auf beiden Seiten
+                    c = code(i, None)
+                    rowmap.append(None)
+                    rows.append(f"<tr>{num(old)}<td width='50%' style='white-space:{wrap}'>{c}</td>"
+                                f"{num(new)}<td width='50%' style='white-space:{wrap}'>{c}</td></tr>")
+                    old += 1
+                    new += 1
+                i += 1
+            continue
+
         for i, line in enumerate(lines[1:], 1):
             kind = line[:1]
             on = (h, i) in selected
             if kind == "+":
-                o, n, bg = "", new, "#2f6b40" if on else "#1e3a26"
+                o, n, bg, mark = "", new, ADD_SEL if on else ADD_BG, ADD_MARK
                 new += 1
             elif kind == "-":
-                o, n, bg = old, "", "#7a3038" if on else "#46252a"
+                o, n, bg, mark = old, "", DEL_SEL if on else DEL_BG, DEL_MARK
                 old += 1
             elif kind == "\\":  # "\ No newline at end of file"
-                o, n, bg = "", "", ""
+                o, n, bg, mark = "", "", "", None
             else:
-                o, n, bg = old, new, ""
+                o, n, bg, mark = old, new, "", None
                 old += 1
                 new += 1
             pickable = selectable and kind in ("+", "-")
             rowmap.append((h, i) if pickable else None)
             check = box(on) if pickable else ""
+            text = (f"<span style='color:{COLORS['dim']}'>{e(line)}</span>" if kind == "\\"
+                    else f"<span style='color:#6a6a6a'>{e(kind or ' ')}</span>{code(i, mark)}")
             rows.append(f"<tr{f' bgcolor={bg}' if bg else ''}>"
-                        f"<td width='18' align='center'>{check}</td>"
-                        f"<td width='44' align='right' style='color:#6a6a6a'>{o}&nbsp;</td>"
-                        f"<td width='44' align='right' style='color:#6a6a6a'>{n}&nbsp;</td>"
-                        f"<td width='100%' colspan='2' style='white-space:pre'>{e(line) or ' '}</td></tr>")
+                        f"<td width='18' align='center'>{check}</td>{num(o)}{num(n)}"
+                        f"<td width='100%' colspan='2' style='white-space:pre'>{text}</td></tr>")
     return f"<table width='100%' cellspacing='0' cellpadding='1'>{''.join(rows)}</table>", rowmap
 
 
@@ -450,16 +632,16 @@ def file_diffs(patch):
     return out
 
 
-def patch_html(patch):
+def patch_html(patch, split=False):
     """Ganzer Commit/Stash im Fork-Stil: pro Datei eine Kopfzeile, darunter der Diff mit Zeilennummern."""
     e = html.escape
     parts = []
-    for i, (_, name, status, diff) in enumerate(file_diffs(patch)):
+    for i, (path, name, status, diff) in enumerate(file_diffs(patch)):
         char, color = STATUS_BADGES.get(status, (status, COLORS["dim"]))
         parts.append(f"<a name='file{i}'></a><table width='100%' cellspacing='0' cellpadding='5'>"
                      f"<tr bgcolor='#2b2b2e'><td><b style='color:{color}'>{char}</b>&nbsp; <b>{e(name)}</b></td></tr></table>")
         if split_hunks(diff)[1]:
-            parts.append(diff_html(diff)[0])
+            parts.append(diff_html(diff, path=path, split=split)[0])
         else:
             parts.append(f"<p style='color:{COLORS['dim']}'>&nbsp;Keine Textänderungen (z.B. Binärdatei oder nur Rechte).</p>")
         parts.append("<br>")
@@ -686,6 +868,15 @@ def set_repo_value(key, repo, value):
     settings.setValue(key, json.dumps(data))
 
 
+def view_option(key):
+    """Globale Ansichts-Schalter: "ignore_ws" (Leerzeichen ignorieren), "split_diff" (nebeneinander)."""
+    return QSettings("git_gui", "git_gui").value(key, False, type=bool)
+
+
+def ws_args():
+    return ["-w"] if view_option("ignore_ws") else []
+
+
 def load_stars(repo):
     """Favoriten (Starred) eines Repos als ["branch:main", "remote:origin/dev", …]."""
     return repo_value("starred", repo, [])
@@ -857,6 +1048,7 @@ class RepoTab(QWidget):
         self.discard_btn.clicked.connect(lambda: self.diff_ctx and self.discard([self.diff_ctx[0]]))
         dh.addWidget(self.diff_title)
         dh.addStretch()
+        self.diff_head_layout = dh  # Ansichts-Knöpfe hängt das Hauptfenster ein (add_view_buttons)
         dh.addWidget(self.lines_btn)
         dh.addWidget(self.discard_btn)
         dh.addWidget(self.file_btn)
@@ -909,6 +1101,10 @@ class RepoTab(QWidget):
         self.log_filter = QLineEdit(objectName="filter", clearButtonEnabled=True,
                                     placeholderText="Verlauf filtern: Tag, Branch, Nachricht, Autor oder Hash (Strg+F)")
         self.log_filter.textChanged.connect(self.apply_log_filter)
+        self.log_limit, self.log_truncated, self.log_args = LOG_PAGE, False, []
+        self.log.verticalScrollBar().valueChanged.connect(self.on_log_scroll)
+        self.search_timer = QTimer(self, singleShot=True, interval=350)  # erst suchen, wenn das Tippen pausiert
+        self.search_timer.timeout.connect(self.search_older)
         self.log.setItemDelegateForColumn(1, AuthorDelegate(self.log))
         header = self.log.header()
         header.setStretchLastSection(False)
@@ -1003,6 +1199,16 @@ class RepoTab(QWidget):
         QShortcut(QKeySequence("Ctrl+F"), self, context=Qt.WidgetWithChildrenShortcut,
                   activated=lambda: (self.log_filter if self.stack.currentIndex() == 1 else self.filter).setFocus())
 
+        # Automatisch neu laden, wenn sich im .git-Ordner etwas tut (Commit/Branchwechsel im Terminal usw.)
+        self.git_dir = None
+        self.ahead_behind = None  # (ahead, behind) gegenüber dem Upstream, None = kein Upstream
+        self.last_refresh = 0.0
+        self.watcher = QFileSystemWatcher(self)
+        self.watcher.directoryChanged.connect(self.on_repo_changed)
+        self.watcher.fileChanged.connect(self.on_repo_changed)
+        self.reload_timer = QTimer(self, singleShot=True, interval=400)  # mehrere Änderungen zusammenfassen
+        self.reload_timer.timeout.connect(self.auto_refresh)
+
         self.refresh()
 
     # --- git ---------------------------------------------------------------
@@ -1019,19 +1225,36 @@ class RepoTab(QWidget):
         self.last_rc = r.returncode
         if check:
             if r.returncode:
-                QMessageBox.warning(self, "git " + args[0], r.stderr or r.stdout)
+                self.show_error(args[0], r.stderr + r.stdout)
             else:
                 self.show_status(args[0], r.stderr or r.stdout)
         return r.stdout
+
+    def show_error(self, cmd, output):
+        """Fehler verständlich anzeigen; Gits Originaltext steht unter „Details“."""
+        message, translated = friendly_error(output)
+        if message is None:  # Konflikt: Banner und Konfliktliste erklären es schon
+            if isinstance(self.window(), QMainWindow):
+                self.window().statusBar().showMessage(f"git {cmd}: Konflikte – bitte lösen", 10000)
+            return
+        box = QMessageBox(QMessageBox.Warning, f"git {cmd} fehlgeschlagen", message, QMessageBox.Ok, self)
+        if translated:
+            box.setDetailedText(output.strip())
+        box.exec()
 
     def show_status(self, cmd, output):
         last = output.strip().splitlines()
         if isinstance(self.window(), QMainWindow):
             self.window().statusBar().showMessage(f"git {cmd}: " + (last[-1] if last else "ok"), 8000)
 
-    def act_async(self, *args):
-        """Fetch/Pull/Push im Hintergrund: das Fenster bleibt bedienbar, danach wird aktualisiert."""
+    def act_async(self, *args, quiet=False):
+        """Fetch/Pull/Push im Hintergrund: das Fenster bleibt bedienbar, danach wird aktualisiert.
+
+        quiet=True (automatischer Fetch): Fehler nur in der Statusleiste, kein Dialog.
+        """
         if self.proc:
+            if quiet:
+                return
             return QMessageBox.information(self, "Git", f"Es läuft noch „git {self.proc_label}“. Bitte kurz warten.")
         proc = QProcess(self)
         env = QProcessEnvironment()
@@ -1039,23 +1262,29 @@ class RepoTab(QWidget):
             env.insert(key, value)
         proc.setProcessEnvironment(env)
         proc.setWorkingDirectory(self.repo)
-        proc.finished.connect(lambda code, status: self.async_done(proc, args, code, status))
-        proc.errorOccurred.connect(lambda err: err == QProcess.FailedToStart and self.async_done(proc, args, -1, None))
+        proc.finished.connect(lambda code, status: self.async_done(proc, args, code, status, quiet))
+        proc.errorOccurred.connect(lambda err: err == QProcess.FailedToStart
+                                   and self.async_done(proc, args, -1, None, quiet))
         self.proc, self.proc_label = proc, args[0]
         self.changed.emit()
         proc.start("git", list(args))
         proc.closeWriteChannel()  # keine Eingaben: Git soll nie auf stdin warten
 
-    def async_done(self, proc, args, code, status):
+    def async_done(self, proc, args, code, status, quiet=False):
         if self.proc is not proc:  # schon behandelt (z.B. Startfehler + finished)
             return
         out = bytes(proc.readAllStandardOutput()).decode(errors="replace")
         err = bytes(proc.readAllStandardError()).decode(errors="replace")
         self.proc = None
         proc.deleteLater()
-        if code != 0 or status == QProcess.CrashExit:
-            QMessageBox.warning(self, "git " + args[0], err or out or "Der Befehl wurde abgebrochen.")
-        else:
+        if (code != 0 or status == QProcess.CrashExit) and quiet:
+            message = friendly_error(err + out)[0] or "Konflikte"
+            if isinstance(self.window(), QMainWindow):
+                self.window().statusBar().showMessage(f"Automatischer Fetch ({self.name}) fehlgeschlagen: "
+                                                      + message.splitlines()[0], 10000)
+        elif code != 0 or status == QProcess.CrashExit:
+            self.show_error(args[0], (err + out) or "Der Befehl wurde abgebrochen.")
+        elif not quiet:
             self.show_status(args[0], err or out)
         self.refresh()
 
@@ -1232,9 +1461,37 @@ class RepoTab(QWidget):
             if found:
                 widget.setCurrentItem(found[0])
         self.branch = self.git("branch", "--show-current").strip() or "(detached)"
+        counts = self.git("rev-list", "--left-right", "--count", "HEAD...@{u}").split()
+        self.ahead_behind = tuple(map(int, counts)) if self.last_rc == 0 and len(counts) == 2 else None
         self.changed.emit()
         self.build_sidebar(len({p for p, _ in unstaged} | {p for p, _ in staged} | set(conflicts)))
         self.render_view()
+        self.watch_git_dir()
+        self.last_refresh = time.time()
+
+    def watch_git_dir(self):
+        """.git, HEAD-Datei und alle Ordner unter refs/ beobachten (QFileSystemWatcher ist nicht rekursiv)."""
+        if not self.git_dir:
+            self.git_dir = self.git("rev-parse", "--absolute-git-dir").strip()
+        if not self.git_dir:
+            return
+        paths = [self.git_dir]
+        for sub in ("refs/heads", "refs/remotes", "refs/tags"):
+            for dirpath, _dirs, _files in os.walk(os.path.join(self.git_dir, sub)):
+                paths.append(dirpath)
+        new = [p for p in paths if p not in self.watcher.directories()]
+        if new:
+            self.watcher.addPaths(new)
+
+    def on_repo_changed(self, _path):
+        # Änderungen direkt nach unserem eigenen Neuladen stammen meist von uns selbst
+        if time.time() - self.last_refresh > 1.0:
+            self.reload_timer.start()
+
+    def auto_refresh(self):
+        """Neu laden nach Änderungen von außen – nur sichtbare Tabs, beim Tab-Wechsel wird ohnehin geladen."""
+        if self.isVisible() and not self.proc:
+            self.refresh()
 
     def build_sidebar(self, n_changes):
         t = self.sidebar
@@ -1374,6 +1631,8 @@ class RepoTab(QWidget):
     def on_select(self, item):
         key = item and item.data(0, Qt.UserRole)
         if key:
+            if tuple(key) != self.view:
+                self.log_limit = LOG_PAGE  # neue Ansicht: wieder mit der ersten Seite anfangen
             self.view = tuple(key)
             self.render_view()
 
@@ -1449,41 +1708,63 @@ class RepoTab(QWidget):
             self.stack.setCurrentIndex(2)
             ref = self.view[1]
             # -u: auch neue (untracked) Dateien des Stashs zeigen
-            self.stash_view.setHtml(patch_html(self.git("stash", "show", "-p", "-u", ref)))
+            self.stash_view.setHtml(patch_html(self.git("stash", "show", "-p", "-u", *ws_args(), ref),
+                                               split=view_option("split_diff")))
             return
         self.stack.setCurrentIndex(1)
         self.graph_bar.hide()  # nur in „Alle Commits“ mit aktivem Graph-Filter sichtbar
         keep = self.log.currentItem() and self.log.currentItem().data(0, HASH_ROLE)
+        bar = self.log.verticalScrollBar()
+        scroll = bar.value()
+        self.log.blockSignals(True)  # kein show_commit für jede Zwischenauswahl
         self.log.clear()
+        self.log.blockSignals(False)
         self.commit_info.clear()
         self.commit_view.clear()
         head = self.git("rev-parse", "HEAD").strip()
-        out = self.git("log", "--date-order", "--decorate=full", "-n", "1000", "--date=format:%d.%m.%Y %H:%M",
-                       "--format=%H%x1f%P%x1f%h%x1f%s%x1f%an%x1f%ad%x1f%D",
-                       *(self.all_commits_args() if self.view[1] == "--all" else [self.view[1]]), "--")
+        self.log_args = self.all_commits_args() if self.view[1] == "--all" else [self.view[1]]
+        out = self.git("log", "--date-order", "--decorate=full", "-n", str(self.log_limit), *LOG_FORMAT,
+                       *self.log_args, "--")
         commits = [line.split("\x1f") for line in out.splitlines()]
+        self.log_truncated = len(commits) >= self.log_limit
         graph = build_graph([(c[0], c[1].split()) for c in commits])
-        items = []
-        for (full, _, h, subject, author, date, refs), row in zip(commits, graph):
-            it = QTreeWidgetItem([subject, author, h, date])
-            it.setData(0, GRAPH_ROLE, row)
-            it.setData(0, REFS_ROLE, parse_refs(refs))
-            it.setData(0, HASH_ROLE, full)
-            if full == head:  # aktueller Commit fett, wie bei Fork
-                it.setData(0, HEAD_ROLE, True)
-                for col in (1, 2, 3):
-                    f = it.font(col)
-                    f.setBold(True)
-                    it.setFont(col, f)
-            for col in (2, 3):
-                it.setForeground(col, QColor(COLORS["dim"]) if full != head else QColor(COLORS["text"]))
-            items.append(it)
+        items = [self.log_item(c, row, head) for c, row in zip(commits, graph)]
         self.log.addTopLevelItems(items)
         # zuvor gewählten Commit wieder auswählen, sonst den ersten – damit die Details nicht leer sind
         again = next((it for it in items if it.data(0, HASH_ROLE) == keep), items[0] if items else None)
+        bar.blockSignals(True)  # Auswahl und Scroll-Wiederherstellung sollen nicht selbst Nachladen auslösen
         if again:
             self.log.setCurrentItem(again)
+        bar.setValue(scroll)  # Scrollposition bleibt beim Neuladen/Nachladen erhalten
+        bar.blockSignals(False)
         self.apply_log_filter()
+
+    def log_item(self, fields, row, head):
+        """Eine Zeile im Verlauf aus den Feldern von LOG_FORMAT; row = Graph-Daten (None ohne Graph)."""
+        full, _parents, h, subject, author, date, refs = fields
+        it = QTreeWidgetItem([subject, author, h, date])
+        it.setData(0, GRAPH_ROLE, row)
+        it.setData(0, REFS_ROLE, parse_refs(refs))
+        it.setData(0, HASH_ROLE, full)
+        if full == head:  # aktueller Commit fett, wie bei Fork
+            it.setData(0, HEAD_ROLE, True)
+            for col in (1, 2, 3):
+                f = it.font(col)
+                f.setBold(True)
+                it.setFont(col, f)
+        for col in (2, 3):
+            it.setForeground(col, QColor(COLORS["dim"]) if full != head else QColor(COLORS["text"]))
+        return it
+
+    def on_log_scroll(self, value):
+        """Am Ende des Verlaufs angekommen: die nächsten LOG_PAGE Commits nachladen."""
+        bar = self.log.verticalScrollBar()
+        if (self.log_truncated and not self.log_filter.text().strip() and bar.maximum() > 0
+                and value >= bar.maximum() - 3 and self.stack.currentIndex() == 1):
+            self.log_limit += LOG_PAGE
+            self.render_view()
+            if isinstance(self.window(), QMainWindow):
+                self.window().statusBar().showMessage(f"{self.log.topLevelItemCount()} Commits geladen", 4000)
 
     def log_menu(self, pos):
         """Rechtsklick auf einen Commit im Verlauf."""
@@ -1508,8 +1789,53 @@ class RepoTab(QWidget):
                 a.setText(f"{name} (erst {OPERATIONS[self.op]} abschließen)")
                 a.setEnabled(False)
         menu.addSeparator()
+        menu.addAction("Branch hier erstellen…", lambda: self.new_branch(h[:10]))
+        menu.addAction("Tag hier erstellen…", lambda: self.create_tag(h))
+        checkout = menu.addAction("Commit auschecken…", lambda: self.checkout_commit(h))
+        target = f"„{self.branch}“" if self.branch != "(detached)" else "HEAD"
+        reset = menu.addMenu(f"{target} hierhin zurücksetzen")
+        for mode, label in (("soft", "Soft – Änderungen bleiben gestaged"),
+                            ("mixed", "Mixed – Änderungen bleiben ungestaged"),
+                            ("hard", "Hard – alle Änderungen verwerfen…")):
+            reset.addAction(label, lambda m=mode: self.reset_to(h, m))
+        if self.op:  # während Merge/Rebase lieber nicht umbiegen
+            checkout.setEnabled(False)
+            reset.setEnabled(False)
+        menu.addSeparator()
         menu.addAction("Commit-Hash kopieren", lambda: QApplication.clipboard().setText(h))
         menu.exec(self.log.viewport().mapToGlobal(pos))
+
+    def create_tag(self, h):
+        name, ok = QInputDialog.getText(self, "Tag erstellen", f"Name des Tags für Commit {h[:7]}:")
+        if not ok or not name.strip():
+            return
+        msg, ok = QInputDialog.getText(self, "Tag erstellen",
+                                       "Nachricht (optional – mit Nachricht entsteht ein annotierter Tag):")
+        if ok:
+            self.act("tag", *(["-a", "-m", msg.strip()] if msg.strip() else []), name.strip(), h)
+
+    def checkout_commit(self, h):
+        if self.confirm("Commit auschecken", f"Commit {h[:7]} auschecken?\n\nDu bist danach auf keinem Branch "
+                        "(„detached HEAD“). Neue Commits dort gehen leicht verloren – lege dafür einen Branch an."):
+            self.act("switch", "--detach", h)
+
+    def reset_to(self, h, mode):
+        """Aktuellen Branch auf einen Commit zurücksetzen (soft/mixed/hard), mit Warnung vor Verlusten."""
+        target = f"„{self.branch}“" if self.branch != "(detached)" else "HEAD"
+        text = {"soft": f"{target} auf {h[:7]} zurücksetzen?\nDie Änderungen der späteren Commits bleiben gestaged.",
+                "mixed": f"{target} auf {h[:7]} zurücksetzen?\nDie Änderungen der späteren Commits bleiben als "
+                         "ungestagte Änderungen erhalten.",
+                "hard": f"{target} HART auf {h[:7]} zurücksetzen?\nAlle Änderungen der späteren Commits UND alle "
+                        "lokalen, nicht committeten Änderungen gehen verloren."}[mode]
+        later = self.git("rev-list", "--count", f"{h}..HEAD").strip()
+        if later and later != "0":
+            text += f"\n\n{later} Commit(s) gehören danach nicht mehr zum Branch (über den Reflog noch auffindbar)."
+        if mode == "hard":
+            dirty = len(self.git("status", "--porcelain").splitlines())
+            if dirty:
+                text += f"\n\nAchtung: {dirty} Datei(en) mit lokalen Änderungen werden verworfen."
+        if self.confirm("Zurücksetzen", text):
+            self.act("reset", f"--{mode}", h)
 
     def apply_commit(self, cmd, h, subject):
         """Cherry-Pick (übernehmen) oder Revert (per neuem Commit rückgängig machen) im aktuellen Branch.
@@ -1543,10 +1869,17 @@ class RepoTab(QWidget):
         return graph_args(only, hidden, existing)
 
     def apply_log_filter(self, *_):
-        """Blendet Commits aus, deren Tags/Branches, Nachricht, Autor und Hash nicht zum Suchtext passen."""
-        # ponytail: durchsucht nur die geladenen 1000 Commits; ältere Tags bräuchten `git log --grep`/Ref-Suche
+        """Blendet Commits aus, deren Tags/Branches, Nachricht, Autor und Hash nicht zum Suchtext passen.
+
+        Ist der Verlauf nur teilweise geladen, sucht search_older danach auch in der restlichen Historie.
+        """
+        for i in reversed(range(self.log.topLevelItemCount())):  # Treffer der vorigen Suche entfernen
+            if self.log.topLevelItem(i).data(0, EXTRA_ROLE):
+                self.log.takeTopLevelItem(i)
         text = self.log_filter.text().strip().lower()
         self.commit_delegate.filtering = bool(text)
+        if text and self.log_truncated:
+            self.search_timer.start()
         shown = 0
         for i in range(self.log.topLevelItemCount()):
             it = self.log.topLevelItem(i)
@@ -1562,6 +1895,44 @@ class RepoTab(QWidget):
                           if not self.log.topLevelItem(i).isHidden()), None)
             self.log.setCurrentItem(first)
         self.log.viewport().update()
+
+    def search_older(self):
+        """Filter auch jenseits der geladenen Commits: passende Tags/Branches, Nachrichten, Autoren und Hashes."""
+        text = self.log_filter.text().strip()
+        if not text or not self.log_truncated:
+            return
+        loaded = {self.log.topLevelItem(i).data(0, HASH_ROLE) for i in range(self.log.topLevelItemCount())}
+        found, all_view = set(), self.view[1] == "--all"
+        if all_view:  # Refs, deren Name passt (annotierte Tags: der Commit dahinter)
+            for line in self.git("for-each-ref", "--format=%(objectname) %(*objectname) %(refname:short)",
+                                 "refs/tags", "refs/heads", "refs/remotes").splitlines():
+                obj, peeled, name = line.split(" ", 2)
+                if text.lower() in name.lower():
+                    found.add(peeled or obj)
+        for option in (f"--grep={text}", f"--author={text}"):
+            found.update(self.git("log", "-i", "-F", option, "--format=%H", "-n", "300", *self.log_args, "--").split())
+        if re.fullmatch(r"[0-9a-fA-F]{4,40}", text):
+            h = self.git("rev-parse", "--verify", "-q", f"{text}^{{commit}}").strip()
+            if h and not all_view:
+                self.git("merge-base", "--is-ancestor", h, self.view[1])
+            if h and (all_view or self.last_rc == 0):
+                found.add(h)
+        new = sorted(found - loaded)[:500]
+        if not new or self.log_filter.text().strip() != text:  # inzwischen weitergetippt
+            return
+        out = self.git("log", "--no-walk=sorted", "--decorate=full", *LOG_FORMAT, *new, "--")
+        head = self.git("rev-parse", "HEAD").strip()
+        for line in out.splitlines():
+            it = self.log_item(line.split("\x1f"), None, head)
+            it.setData(0, EXTRA_ROLE, True)
+            it.setToolTip(0, "Älterer Commit außerhalb der geladenen Liste")
+            self.log.addTopLevelItem(it)
+        shown = sum(not self.log.topLevelItem(i).isHidden() for i in range(self.log.topLevelItemCount()))
+        self.log_filter.setToolTip(f"{shown} Treffer, davon {len(new)} aus älteren Commits")
+        current = self.log.currentItem()
+        if current is None or current.isHidden():
+            self.log.setCurrentItem(next(self.log.topLevelItem(i) for i in range(self.log.topLevelItemCount())
+                                         if not self.log.topLevelItem(i).isHidden()))
 
     def show_commit(self, item, parent=0):
         """Details eines Commits; bei Merges die Änderungen gegenüber Parent Nr. `parent`."""
@@ -1608,9 +1979,10 @@ class RepoTab(QWidget):
             <p>{e(rest.strip()).replace(chr(10), "<br>")}</p><hr>
             {self.parent_switch(plist, parent) if base else ""}
             <table cellspacing='4'>{file_rows}</table>""")
-        patch = diff("--patch")
+        patch = diff("--patch", *ws_args())
         self.commit_files = [f[0] for f in file_diffs(patch)]
-        self.commit_view.setHtml((self.parent_switch(plist, parent) if base else "") + patch_html(patch))
+        self.commit_view.setHtml((self.parent_switch(plist, parent) if base else "")
+                                 + patch_html(patch, split=view_option("split_diff")))
 
     def fill_tree(self):
         """Baut den Dateibaum erst, wenn der Tab sichtbar ist (bei großen Repos teuer)."""
@@ -1696,6 +2068,22 @@ class RepoTab(QWidget):
             if path in self.commit_files:
                 self.commit_view.scrollToAnchor(f"file{self.commit_files.index(path)}")
 
+    def add_view_buttons(self, actions):
+        """Schalter „Leerzeichen ignorieren“/„Nebeneinander“ auch direkt in der Diff-Kopfzeile."""
+        for i, action in enumerate(actions):
+            btn = QToolButton(autoRaise=True)
+            btn.setDefaultAction(action)  # Text/Häkchen bleiben mit dem Menü synchron
+            self.diff_head_layout.insertWidget(1 + i, btn)
+
+    def rerender_diffs(self):
+        """Nach Umschalten der Ansicht: alle sichtbaren Diffs neu holen und zeichnen."""
+        if self.diff_ctx:
+            self.show_diff(*self.diff_ctx[:2])
+        if self.log.currentItem():
+            self.show_commit(self.log.currentItem())
+        if self.view[0] == "stash":
+            self.render_view()
+
     def selected(self, widget):
         return [it.text() for it in widget.selectedItems()]
 
@@ -1744,7 +2132,8 @@ class RepoTab(QWidget):
     def show_diff(self, path, cached):
         if not path:
             return
-        text = self.git("diff", "--cached", "--", path) if cached else self.git("diff", "--", path)
+        ws = ws_args()
+        text = self.git("diff", *ws, "--cached", "--", path) if cached else self.git("diff", *ws, "--", path)
         if not text and not cached:  # untracked file: diff against nothing
             text = self.git("diff", "--no-index", "--", "/dev/null", path)
         self.diff_ctx = (path, cached, text)
@@ -1762,11 +2151,14 @@ class RepoTab(QWidget):
 
     def render_diff(self):
         path, cached, text = self.diff_ctx
-        # Zeilenweise geht nicht bei gelöschten Dateien (Git verlangt dort den ganzen Inhalt)
-        selectable = "\ndeleted file mode" not in split_hunks(text)[0]
+        ws, split = view_option("ignore_ws"), view_option("split_diff")
+        # Zeilenweise geht nicht bei gelöschten Dateien (Git verlangt dort den ganzen Inhalt), nicht nebeneinander,
+        # und mit ignorierten Leerzeichen passt der Diff nicht mehr zur Datei – dann auch keine Hunks
+        selectable = not ws and not split and "\ndeleted file mode" not in split_hunks(text)[0]
+        action = None if ws else ("Hunk unstagen" if cached else "Hunk stagen")
         bar = self.diff.verticalScrollBar()
         pos = bar.value()  # Scrollposition beim Neuzeichnen behalten
-        page, self.diff.rowmap = diff_html(text, "Hunk unstagen" if cached else "Hunk stagen", self.sel_lines, selectable)
+        page, self.diff.rowmap = diff_html(text, action, self.sel_lines, selectable, path=path, split=split)
         self.diff.setHtml(page)
         bar.setValue(pos)
         n = len(self.sel_lines)
@@ -2436,6 +2828,7 @@ class MainWindow(QMainWindow):
         a_close = action("Tab schließen", "tab-close", lambda: self.close_tab(self.tabs.currentIndex()), "Ctrl+W",
                          on_tab=False)
         self.repo_actions = [a_fetch, a_pull, a_push, a_stash, a_pop, a_branch, a_term, a_refresh]
+        self.a_pull, self.a_push = a_pull, a_push
 
         menu = self.menuBar().addMenu("Datei")
         menu.addAction(a_open)
@@ -2445,6 +2838,28 @@ class MainWindow(QMainWindow):
         menu = self.menuBar().addMenu("Repository")
         for a in (a_fetch, a_pull, a_push, None, a_stash, a_pop, None, a_branch, a_term, None, a_refresh):
             menu.addSeparator() if a is None else menu.addAction(a)
+
+        menu.addSeparator()
+        self.a_autofetch = QAction("Automatisch fetchen (alle 5 Minuten)", self, checkable=True,
+                                   checked=self.settings.value("auto_fetch", True, type=bool))
+        self.a_autofetch.toggled.connect(lambda on: self.settings.setValue("auto_fetch", on))
+        menu.addAction(self.a_autofetch)
+        self.fetch_timer = QTimer(self, interval=5 * 60 * 1000)
+        self.fetch_timer.timeout.connect(self.auto_fetch)
+        self.fetch_timer.start()
+        # Zurück ins Fenster: Arbeitsdateien können sich geändert haben (die überwacht QFileSystemWatcher nicht)
+        QApplication.instance().applicationStateChanged.connect(
+            lambda state: state == Qt.ApplicationActive and isinstance(self.tabs.currentWidget(), RepoTab)
+            and time.time() - self.tabs.currentWidget().last_refresh > 2 and self.tabs.currentWidget().refresh())
+
+        menu = self.menuBar().addMenu("Ansicht")
+        self.view_actions = []
+        for key, text, tip in (("ignore_ws", "Leerzeichen ignorieren", "Leerzeichen-Änderungen im Diff ignorieren"),
+                               ("split_diff", "Nebeneinander", "Diff als alt | neu nebeneinander zeigen")):
+            a = QAction(text, self, checkable=True, checked=view_option(key), toolTip=tip)
+            a.toggled.connect(lambda on, key=key: self.set_view_option(key, on))
+            menu.addAction(a)
+            self.view_actions.append(a)
 
         tb = QToolBar(objectName="main", movable=False, floatable=False)
         tb.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
@@ -2531,6 +2946,7 @@ class MainWindow(QMainWindow):
         # Ein offener „Neuer Tab“ wird durch das Repo ersetzt, wie in Fork
         manager = next((w for w in map(self.tabs.widget, range(self.tabs.count())) if isinstance(w, RepoManager)), None)
         tab = RepoTab(root)
+        tab.add_view_buttons(self.view_actions)
         tab.changed.connect(lambda t=tab: self.update_titles(t))
         i = self.tabs.insertTab(self.tabs.indexOf(manager) if manager else self.tabs.count(), tab, tab.name)
         self.tabs.setTabToolTip(i, root)
@@ -2541,6 +2957,19 @@ class MainWindow(QMainWindow):
         self.update_titles(tab)
         self.update_page()
         self.save_session()
+
+    def auto_fetch(self):
+        """Alle offenen Repos mit Remote still im Hintergrund fetchen, damit die Zähler an Pull/Push stimmen."""
+        if not self.a_autofetch.isChecked():
+            return
+        for tab in self.repo_tabs():
+            if tab.git("remote").strip():
+                tab.act_async("fetch", "--all", "--prune", quiet=True)
+
+    def set_view_option(self, key, on):
+        self.settings.setValue(key, on)
+        for tab in self.repo_tabs():
+            tab.rerender_diffs()
 
     def open_dialog(self):
         path = QFileDialog.getExistingDirectory(self, "Repository öffnen")
@@ -2605,6 +3034,11 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(f"{tab.name} — Git GUI")
             self.repo_info.setText(f"<b style='font-size:11pt'>{html.escape(tab.name)}</b><br>"
                                    f"<span style='color:{COLORS['dim']}'>⑂ {html.escape(tab.branch)}</span>")
+            ahead, behind = tab.ahead_behind or (0, 0)
+            self.a_pull.setText(f"Pull ↓{behind}" if behind else "Pull")
+            self.a_push.setText(f"Push ↑{ahead}" if ahead else "Push")
+            self.a_pull.setToolTip(f"{behind} Commit(s) auf dem Remote, die du noch nicht hast" if behind else "Pull")
+            self.a_push.setToolTip(f"{ahead} lokale(r) Commit(s), noch nicht gepusht" if ahead else "Push")
 
     def update_page(self):
         """Toolbar nur für Repo-Tabs aktiv; im „Neuer Tab“ eine Begrüßung statt Repo/Branch."""
@@ -2612,6 +3046,8 @@ class MainWindow(QMainWindow):
         for a in self.repo_actions:
             a.setEnabled(is_repo)
         if not is_repo:
+            self.a_pull.setText("Pull")
+            self.a_push.setText("Push")
             self.setWindowTitle("Git GUI")
             self.repo_info.setText(f"<b style='font-size:11pt'>Willkommen!</b><br>"
                                    f"<span style='color:{COLORS['dim']}'>Öffne ein Repository</span>")
@@ -2677,6 +3113,13 @@ if __name__ == "__main__":
         assert graph_args(["refs/heads/dev", "refs/heads/weg"], [], ex) == ["refs/heads/dev"]
         assert graph_args(["refs/heads/weg"], ["refs/remotes/origin/main"], ex) == [
             "--exclude=refs/stash", "--exclude=refs/remotes/origin/main", "--all"]
+        assert word_marks("x = foo(1)", "x = bar(1)") == ([(4, 7)], [(4, 7)])
+        assert word_marks("abc", "völlig anders hier") == ([], [])
+        assert hunk_marks(["@@", "-a = 1", "+a = 2", " c"]) == {1: [(4, 5)], 2: [(4, 5)]}
+        assert code_html("a<b", marks=[(1, 2)], mark_bg="#f00") == "a<span style='background:#f00;'>&lt;</span>b"
+        assert friendly_error("CONFLICT (content): Merge conflict in a")[0] is None
+        assert friendly_error(" ! [rejected] main -> main (fetch first)")[0].startswith("Push abgelehnt")
+        assert friendly_error("fatal: something odd") == ("fatal: something odd", False)
         print("ok")
         sys.exit(0)
     app = QApplication(sys.argv)

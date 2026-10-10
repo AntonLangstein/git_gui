@@ -1,29 +1,28 @@
 # Roadmap
 
-Geplante Verbesserungen, nach Nutzen sortiert. Empfohlene Reihenfolge: zuerst **Tests (13)**, weil sie alles
-Weitere absichern, danach **1–4**, die im Alltag am meisten auffallen.
+Geplante Verbesserungen, nach Nutzen sortiert. Punkte 1–8 sind umgesetzt. Als Nächstes empfohlen: **Tests (13)**, weil sie alles Weitere absichern.
 
 Aufwand: **S** = Stunden, **M** = ca. ein Tag, **L** = mehrere Tage.
 
 ## Als Nächstes
 
-- [ ] **1. Automatisch aktualisieren** (S) – `.git`-Ordner beobachten (`QFileSystemWatcher`) und neu laden, wenn im
+- [x] **1. Automatisch aktualisieren** (S) – `.git`-Ordner beobachten (`QFileSystemWatcher`) und neu laden, wenn im
   Terminal committet oder ein Branch gewechselt wird. Bisher nur per F5 oder Tab-Wechsel.
-- [ ] **2. Ahead/Behind an Pull und Push** (S) – Zähler an den Toolbar-Knöpfen, wie viele Commits zu pullen bzw.
+- [x] **2. Ahead/Behind an Pull und Push** (S) – Zähler an den Toolbar-Knöpfen, wie viele Commits zu pullen bzw.
   zu pushen sind; optional automatischer Fetch alle paar Minuten.
-- [ ] **3. Commit-Menü im Verlauf erweitern** (M) – „Branch hier erstellen“, „Tag hier erstellen“, „Commit
+- [x] **3. Commit-Menü im Verlauf erweitern** (M) – „Branch hier erstellen“, „Tag hier erstellen“, „Commit
   auschecken“, „Branch auf diesen Commit zurücksetzen“ (soft/mixed/hard, hard mit Warnung).
-- [ ] **4. Freundlichere Fehlermeldungen** (S) – bei Konflikten kein Git-Dialog vor dem Banner; häufige Fehler
+- [x] **4. Freundlichere Fehlermeldungen** (S) – bei Konflikten kein Git-Dialog vor dem Banner; häufige Fehler
   übersetzt und mit Lösungshinweis (z. B. „Push abgelehnt – erst pullen“).
-- [ ] **5. Verlauf nachladen** (M) – beim Scrollen weitere Commits laden statt fest bei 1000 aufzuhören; damit findet
+- [x] **5. Verlauf nachladen** (M) – beim Scrollen weitere Commits laden statt fest bei 1000 aufzuhören; damit findet
   auch der Verlaufsfilter ältere Tags.
 
 ## Diff-Ansicht
 
-- [ ] **6. Wort-Diff** (M) – geänderte Wörter innerhalb einer Zeile hervorheben.
-- [ ] **7. Syntax-Hervorhebung und Whitespace** (M) – Hervorhebung nach Dateityp; Schalter „Leerzeichen-Änderungen
+- [x] **6. Wort-Diff** (M) – geänderte Wörter innerhalb einer Zeile hervorheben.
+- [x] **7. Syntax-Hervorhebung und Whitespace** (M) – Hervorhebung nach Dateityp; Schalter „Leerzeichen-Änderungen
   ignorieren“.
-- [ ] **8. Nebeneinander-Ansicht** (M) – alt | neu als Alternative zur Zeilenansicht.
+- [x] **8. Nebeneinander-Ansicht** (M) – alt | neu als Alternative zur Zeilenansicht.
 
 ## Fehlende Git-Funktionen
 
