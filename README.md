@@ -7,7 +7,7 @@ die für alles das `git`-Kommandozeilenprogramm aufruft.
 
 - **Mehrere Repositories** in Tabs; offene Tabs werden laufend gemerkt und beim nächsten Start wiederhergestellt
 - **Repository-Verwaltung** im „Neuer Tab“: zuletzt geöffnete und bekannte Repos, Übersicht und Statistik
-  („Commits pro Monat“ je Autor), Ordner nach Repos durchsuchen
+  („Commits pro Monat“ je Autor), eigene Ordner (per Rechtsklick oder Drag & Drop), Festplatte nach Repos durchsuchen
 - **Verlauf** mit gezeichnetem Commit-Graph, farbigen Branch-/Tag-Labels und Autor-Avataren (Initialen)
 - **Commit-Details**: Autor, Committer, Parents, Dateiliste und Diff; bei Merges umschaltbar zwischen den Parents;
   Dateibaum mit allen Dateien zum Stand des Commits

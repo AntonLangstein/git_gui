@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Minimal git GUI im Stil von Fork. Usage: git_gui.py [repo ...]"""
 import html
+import json
 import os
 import re
 import shutil
@@ -8,7 +9,7 @@ import subprocess
 import sys
 import time
 
-from PySide6.QtCore import QPointF, QProcess, QProcessEnvironment, QRectF, QSettings, Qt, QUrl, Signal
+from PySide6.QtCore import QPointF, QProcess, QProcessEnvironment, QRectF, QSettings, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QAction, QColor, QCursor, QDesktopServices, QFont, QIcon, QPixmap, QKeySequence, QPainter, QPainterPath, QPalette,
     QPen, QShortcut,
@@ -1779,6 +1780,25 @@ class CommitChart(QWidget):
         self.update()
 
 
+def group_repos(known, folders, folder_of):
+    """-> [(ordner, [pfade])]: eigene Ordner in ihrer Reihenfolge, zuletzt (None, Repos ohne Ordner).
+
+    Repos sind innerhalb jeder Gruppe nach Namen sortiert; Zuordnungen zu gelöschten Ordnern zählen als „ohne“.
+    """
+    key = lambda p: (os.path.basename(p).lower(), p)
+    groups = [(f, sorted((p for p in known if folder_of.get(p) == f), key=key)) for f in folders]
+    return groups + [(None, sorted((p for p in known if folder_of.get(p) not in folders), key=key))]
+
+
+class RepoTree(QTreeWidget):
+    """Repository-Liste, in der man Repos per Drag & Drop in Ordner zieht."""
+    dropped = Signal()
+
+    def dropEvent(self, event):
+        super().dropEvent(event)
+        self.dropped.emit()
+
+
 class RepoManager(QWidget):
     """„Neuer Tab“: zuletzt geöffnete und bekannte Repositories, mit Übersicht und Statistik – wie in Fork."""
     open_requested = Signal(str)
@@ -1789,19 +1809,29 @@ class RepoManager(QWidget):
         self.current = None
         self.stats_for = None
 
-        self.list = QTreeWidget(objectName="sidebar", headerHidden=True, indentation=14)
+        self.list = RepoTree(objectName="sidebar", headerHidden=True, indentation=14)
+        self.list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.list.setDefaultDropAction(Qt.MoveAction)
+        self.list.invisibleRootItem().setFlags(Qt.ItemIsEnabled)  # nicht auf oberste Ebene ablegen
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.list.dropped.connect(self.on_drop)
         self.list.currentItemChanged.connect(lambda cur, _prev: self.select(cur))
         self.list.itemDoubleClicked.connect(lambda it: it.data(0, Qt.UserRole) and self.open(it.data(0, Qt.UserRole)))
         self.list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self.list_menu)
         add_btn = QPushButton("Hinzufügen…")
         add_btn.clicked.connect(self.add_repo)
-        scan_btn = QPushButton("Ordner durchsuchen…")
+        scan_btn = QPushButton("Durchsuchen…", toolTip="Einen Ordner auf der Festplatte nach Git-Repositories durchsuchen")
         scan_btn.clicked.connect(self.scan_folder)
+        folder_btn = QToolButton(icon=QIcon.fromTheme("folder-new"), toolTip="Neuer Ordner in der Liste", autoRaise=True)
+        folder_btn.clicked.connect(lambda: self.new_folder())
+        if folder_btn.icon().isNull():  # ohne Icon-Theme nicht unsichtbar sein
+            folder_btn.setText("Neuer Ordner")
         btns = QHBoxLayout()
         btns.setContentsMargins(8, 6, 8, 8)
         btns.addWidget(add_btn)
         btns.addWidget(scan_btn)
+        btns.addWidget(folder_btn)
         left = QWidget(objectName="sidebarPane")
         lv = QVBoxLayout(left)
         lv.setContentsMargins(0, 0, 0, 0)
@@ -1866,15 +1896,16 @@ class RepoManager(QWidget):
         return self.settings.value("recent", [], type=list)
 
     def reload(self):
-        """Liste neu aufbauen: „Zuletzt geöffnet“ und alle bekannten Repos, nach Elternordner gruppiert."""
+        """Liste neu aufbauen: „Zuletzt geöffnet“ und alle bekannten Repos in ihren eigenen Ordnern."""
         t = self.list
         t.blockSignals(True)
         t.clear()
         selected = None
 
-        def entry(parent, path):
+        def entry(parent, path, draggable=False):
             nonlocal selected
             it = QTreeWidgetItem(parent, [os.path.basename(path)])
+            it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | (Qt.ItemIsDragEnabled if draggable else Qt.NoItemFlags))
             it.setData(0, Qt.UserRole, path)
             it.setToolTip(0, path)
             it.setIcon(0, QIcon.fromTheme("folder-git", QIcon.fromTheme("vcs-branch")))
@@ -1896,15 +1927,19 @@ class RepoManager(QWidget):
         for path in self.recent():
             entry(sec, path)
         sec = section("Repositories")
-        groups = {}
-        for path in sorted(self.known(), key=lambda p: (os.path.basename(os.path.dirname(p)).lower(), p.lower())):
-            parent = os.path.dirname(path)
-            if parent not in groups:
-                groups[parent] = QTreeWidgetItem(sec, [os.path.basename(parent) or parent])
-                groups[parent].setFlags(Qt.ItemIsEnabled)
-                groups[parent].setIcon(0, QIcon.fromTheme("folder"))
-                groups[parent].setToolTip(0, parent)
-            entry(groups[parent], path)
+        sec.setFlags(Qt.ItemIsEnabled | Qt.ItemIsDropEnabled)  # hierher ziehen = aus dem Ordner nehmen
+        sec.setData(0, NODE_ROLE, "")
+        self.repos_section = sec
+        folders, folder_of = self.folder_data()
+        for name, paths in group_repos(self.known(), folders, folder_of):
+            parent = sec
+            if name is not None:
+                parent = QTreeWidgetItem(sec, [name])
+                parent.setFlags(Qt.ItemIsEnabled | Qt.ItemIsDropEnabled)
+                parent.setData(0, NODE_ROLE, name)
+                parent.setIcon(0, QIcon.fromTheme("folder"))
+            for path in paths:
+                entry(parent, path, draggable=True)
         t.expandAll()
         t.blockSignals(False)
         if selected is None:  # sonst den zuletzt geöffneten zeigen
@@ -1922,9 +1957,80 @@ class RepoManager(QWidget):
     def forget(self, path):
         self.settings.setValue("known", [p for p in self.known() if p != path])
         self.settings.setValue("recent", [p for p in self.recent() if p != path])
+        folders, folder_of = self.folder_data()
+        folder_of.pop(path, None)
+        self.save_folders(folders, folder_of)
         if self.current == path:
             self.current = None
         self.reload()
+
+    # --- eigene Ordner -----------------------------------------------------
+
+    def folder_data(self):
+        """(ordnernamen, {repo-pfad: ordner}) aus den Einstellungen."""
+        try:
+            data = json.loads(self.settings.value("folders", "{}"))
+        except ValueError:
+            data = {}
+        return data.get("names", []), data.get("assign", {})
+
+    def save_folders(self, folders, folder_of):
+        folder_of = {p: f for p, f in folder_of.items() if f in folders}
+        self.settings.setValue("folders", json.dumps({"names": sorted(folders, key=str.lower), "assign": folder_of}))
+
+    def ask_folder_name(self, title, text=""):
+        name, ok = QInputDialog.getText(self, title, "Name des Ordners:", text=text)
+        name = name.strip()
+        if not ok or not name or name == text:
+            return None
+        if name in self.folder_data()[0]:
+            QMessageBox.information(self, title, f"Einen Ordner „{name}“ gibt es schon.")
+            return None
+        return name
+
+    def new_folder(self, move=None):
+        """Neuen Ordner anlegen; mit `move` gleich dieses Repo hineinlegen."""
+        name = self.ask_folder_name("Neuer Ordner")
+        if name:
+            folders, folder_of = self.folder_data()
+            if move:
+                folder_of[move] = name
+            self.save_folders(folders + [name], folder_of)
+            self.reload()
+
+    def rename_folder(self, old):
+        new = self.ask_folder_name("Ordner umbenennen", old)
+        if new:
+            folders, folder_of = self.folder_data()
+            self.save_folders([new if f == old else f for f in folders],
+                              {p: new if f == old else f for p, f in folder_of.items()})
+            self.reload()
+
+    def delete_folder(self, name):
+        """Ordner entfernen; die Repos darin bleiben in der Liste (ohne Ordner)."""
+        folders, folder_of = self.folder_data()
+        self.save_folders([f for f in folders if f != name], folder_of)
+        self.reload()
+
+    def move_to(self, path, folder):
+        folders, folder_of = self.folder_data()
+        folder_of.pop(path, None)
+        if folder:
+            folder_of[path] = folder
+        self.save_folders(folders, folder_of)
+        self.reload()
+
+    def on_drop(self):
+        """Nach Drag & Drop die neue Zuordnung aus dem Baum lesen und speichern."""
+        folders, folder_of = self.folder_data()[0], {}
+        sec = self.repos_section
+        for i in range(sec.childCount()):
+            child = sec.child(i)
+            name = child.data(0, NODE_ROLE)
+            for j in range(child.childCount() if name else 0):
+                folder_of[child.child(j).data(0, Qt.UserRole)] = name
+        self.save_folders(folders, folder_of)
+        QTimer.singleShot(0, self.reload)  # erst nach Ende des Drops neu aufbauen (sortiert wieder)
 
     # --- Aktionen ----------------------------------------------------------
 
@@ -1967,14 +2073,32 @@ class RepoManager(QWidget):
 
     def list_menu(self, pos):
         item = self.list.itemAt(pos)
-        path = item and item.data(0, Qt.UserRole)
-        if not path:
+        if not item:
             return
+        path, folder = item.data(0, Qt.UserRole), item.data(0, NODE_ROLE)
         menu = QMenu(self)
-        menu.addAction("Öffnen", lambda: self.open(path))
-        menu.addAction("Ordner öffnen", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(path)))
-        menu.addSeparator()
-        menu.addAction("Aus der Liste entfernen", lambda: self.forget(path))
+        if path:
+            menu.addAction("Öffnen", lambda: self.open(path))
+            menu.addAction("Im Dateimanager zeigen", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(path)))
+            sub = menu.addMenu("In Ordner verschieben")
+            folders, folder_of = self.folder_data()
+            for name in folders:
+                a = sub.addAction(name, lambda n=name: self.move_to(path, n))
+                a.setEnabled(folder_of.get(path) != name)
+            if folders:
+                sub.addSeparator()
+            sub.addAction("Neuer Ordner…", lambda: self.new_folder(move=path))
+            if folder_of.get(path) in folders:
+                sub.addAction("Aus dem Ordner nehmen", lambda: self.move_to(path, None))
+            menu.addSeparator()
+            menu.addAction("Aus der Liste entfernen", lambda: self.forget(path))
+        elif folder:
+            menu.addAction("Umbenennen…", lambda: self.rename_folder(folder))
+            menu.addAction("Ordner löschen", lambda: self.delete_folder(folder))
+        elif folder == "":  # Abschnitt „Repositories“
+            menu.addAction("Neuer Ordner…", lambda: self.new_folder())
+        else:
+            return
         menu.exec(self.list.viewport().mapToGlobal(pos))
 
     # --- Details -----------------------------------------------------------
@@ -2315,6 +2439,9 @@ if __name__ == "__main__":
         assert series == [("A", [1, 0, 1]), ("B", [0, 0, 1]), ("Andere", [0, 0, 1])]
         assert relative_time(0, now=30) == "gerade eben" and relative_time(0, now=3 * 3600) == "vor 3 Stunden"
         assert relative_time(0, now=86400 + 5) == "gestern" and relative_time(0, now=2 * 365 * 86400) == "vor 2 Jahren"
+        g = group_repos(["/x/zeta", "/x/Alpha", "/y/beta", "/y/gamma"], ["Arbeit"],
+                        {"/y/beta": "Arbeit", "/y/gamma": "Gelöscht"})
+        assert g == [("Arbeit", ["/y/beta"]), (None, ["/x/Alpha", "/y/gamma", "/x/zeta"])]
         print("ok")
         sys.exit(0)
     app = QApplication(sys.argv)
