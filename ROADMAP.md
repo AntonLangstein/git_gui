@@ -1,6 +1,6 @@
 # Roadmap
 
-Geplante Verbesserungen, nach Nutzen sortiert. Punkte 1–8 sind umgesetzt. Als Nächstes empfohlen: **Tests (13)**, weil sie alles Weitere absichern.
+Alle 18 Punkte sind umgesetzt. Neue Ideen bitte unten ergänzen.
 
 Aufwand: **S** = Stunden, **M** = ca. ein Tag, **L** = mehrere Tage.
 
@@ -26,24 +26,30 @@ Aufwand: **S** = Stunden, **M** = ca. ein Tag, **L** = mehrere Tage.
 
 ## Fehlende Git-Funktionen
 
-- [ ] **9. Pull-/Push-Optionen** (S) – Pull mit Rebase statt Merge; Push mit `--force-with-lease`, z. B. nach Amend.
-- [ ] **10. Datei-Historie und Blame** (M) – Rechtsklick auf eine Datei zeigt ihren Verlauf und wer welche Zeile
+- [x] **9. Pull-/Push-Optionen** (S) – Pull mit Rebase statt Merge; Push mit `--force-with-lease`, z. B. nach Amend.
+- [x] **10. Datei-Historie und Blame** (M) – Rechtsklick auf eine Datei zeigt ihren Verlauf und wer welche Zeile
   geändert hat.
-- [ ] **11. Tags anlegen, Remotes verwalten** (S) – Tags erstellen; Remotes hinzufügen, umbenennen, entfernen.
-- [ ] **12. Interaktiver Rebase** (L) – Commits zusammenfassen, umsortieren, umbenennen.
+- [x] **11. Tags anlegen, Remotes verwalten** (S) – Tags erstellen; Remotes hinzufügen, umbenennen, entfernen.
+- [x] **12. Interaktiver Rebase** (L) – Commits zusammenfassen, umsortieren, umbenennen.
 
 ## Stabilität und Pflege
 
-- [ ] **13. Echte Tests** (M) – die bisherigen Testskripte als `tests/`-Sammlung mit pytest und echten Test-Repos;
+- [x] **13. Echte Tests** (M) – die bisherigen Testskripte als `tests/`-Sammlung mit pytest und echten Test-Repos;
   GitHub Action, die sie bei jedem Push ausführt (offscreen, `QT_QPA_PLATFORM=offscreen`).
-- [ ] **14. Aufteilen in Module** (M) – `git_gui.py` (> 2400 Zeilen) in Graph, Diff, Repo-Tab, Verwaltung und
+- [x] **14. Aufteilen in Module** (M) – `git_gui.py` (> 2400 Zeilen) in Graph, Diff, Repo-Tab, Verwaltung und
   Dialoge aufteilen.
-- [ ] **15. Langsame Aktionen im Hintergrund** (M) – Statistik, Dateibaum und Status bei großen Repos asynchron,
+- [x] **15. Langsame Aktionen im Hintergrund** (M) – Statistik, Dateibaum und Status bei großen Repos asynchron,
   damit das Fenster nie hängt.
 
 ## Komfort
 
-- [ ] **16. Hell/Dunkel umschaltbar** (S) – oder Systemfarben übernehmen.
-- [ ] **17. HTTPS-Zugangsdaten** (M) – Passwort-/Token-Dialog statt Abbruch bei Passwortabfragen.
-- [ ] **18. Installation** (S) – Skript oder `pyproject.toml`, das GUI und Menü-Starter mit einem Befehl
-  installiert; optional AUR-Paket.
+- [x] **16. Hell/Dunkel umschaltbar** (S) – oder Systemfarben übernehmen.
+- [x] **17. HTTPS-Zugangsdaten** (M) – Passwort-/Token-Dialog statt Abbruch bei Passwortabfragen.
+- [x] **18. Installation** (S) – Skript oder `pyproject.toml`, das GUI und Menü-Starter mit einem Befehl
+  installiert; optional AUR-Paket (noch offen).
+
+## Ideen für später
+
+- [ ] AUR-Paket (PKGBUILD)
+- [ ] Submodule und Worktrees anzeigen
+- [ ] Suche im Diff
