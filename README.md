@@ -5,9 +5,12 @@ die für alles das `git`-Kommandozeilenprogramm aufruft.
 
 ## Funktionen
 
-- **Mehrere Repositories** in Tabs; offene Tabs werden beim Schließen gemerkt und beim nächsten Start wiederhergestellt
+- **Mehrere Repositories** in Tabs; offene Tabs werden laufend gemerkt und beim nächsten Start wiederhergestellt
+- **Repository-Verwaltung** im „Neuer Tab“: zuletzt geöffnete und bekannte Repos, Übersicht und Statistik
+  („Commits pro Monat“ je Autor), Ordner nach Repos durchsuchen
 - **Verlauf** mit gezeichnetem Commit-Graph, farbigen Branch-/Tag-Labels und Autor-Avataren (Initialen)
-- **Commit-Details**: Autor, Committer, Parents, Dateiliste und Diff; bei Merges umschaltbar zwischen den Parents
+- **Commit-Details**: Autor, Committer, Parents, Dateiliste und Diff; bei Merges umschaltbar zwischen den Parents;
+  Dateibaum mit allen Dateien zum Stand des Commits
 - **Lokale Änderungen**: Dateien, einzelne Hunks oder einzelne Zeilen stagen/unstagen, Änderungen verwerfen,
   Commit mit Betreff, Beschreibung und Amend
 - **Branches**: wechseln, anlegen, umbenennen, löschen, mergen, rebasen – per Doppelklick oder Rechtsklick in der Seitenleiste
@@ -48,7 +51,8 @@ python3 git_gui.py ~/repo1 ~/repo2 # bestimmte Repositories öffnen
 
 | Aktion | So geht's |
 |---|---|
-| Repository öffnen | `+` neben den Tabs, „Öffnen“ oder Strg+O |
+| Repository-Verwaltung | `+` neben den Tabs oder Strg+T |
+| Repository öffnen | „Öffnen“ oder Strg+O |
 | Tab schließen / wechseln | Strg+W / Strg+Tab, Strg+Umschalt+Tab |
 | Aktualisieren | F5 (passiert auch beim Tab-Wechsel) |
 | Committen | Enter im Betreff oder Strg+Enter |

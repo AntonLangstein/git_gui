@@ -6,17 +6,18 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 from PySide6.QtCore import QPointF, QProcess, QProcessEnvironment, QRectF, QSettings, Qt, QUrl, Signal
 from PySide6.QtGui import (
-    QAction, QColor, QDesktopServices, QFont, QIcon, QPixmap, QKeySequence, QPainter, QPainterPath, QPalette,
+    QAction, QColor, QCursor, QDesktopServices, QFont, QIcon, QPixmap, QKeySequence, QPainter, QPainterPath, QPalette,
     QPen, QShortcut,
 )
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QDialog, QFileDialog, QFrame, QGroupBox, QHBoxLayout, QHeaderView,
     QAbstractItemView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
     QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QStyle,
-    QStyledItemDelegate, QTabWidget, QTextBrowser, QToolBar, QToolButton, QTreeWidget, QTreeWidgetItem,
+    QStyledItemDelegate, QTabWidget, QTextBrowser, QToolBar, QToolButton, QToolTip, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
 
@@ -63,6 +64,8 @@ QLineEdit#subject, QPlainTextEdit#body { background: #1b1b1d; border: 1px solid 
 QPushButton#commitBtn { background: #2f6fd0; color: white; border: none; border-radius: 4px; padding: 6px 16px; font-weight: bold; }
 QPushButton#commitBtn:hover { background: #3a7fe6; }
 QPushButton#commitBtn:disabled { background: #3a3a3e; color: #777; }
+QLabel#managerTitle { font-size: 17pt; font-weight: bold; padding: 10px 14px; }
+QLabel#repoHeadline { font-size: 16pt; font-weight: bold; }
 QFrame#banner { background: rgba(229, 83, 75, 45); border-radius: 6px; }
 """
 
@@ -876,6 +879,29 @@ class RepoTab(QWidget):
         self.detail.addTab(self.commit_info, "Commit")
         self.detail.addTab(self.commit_view, "Änderungen")
         self.detail_files = []
+
+        # Dateibaum: alle Dateien des Repos zum Stand des Commits, rechts der Inhalt
+        self.tree_files = QTreeWidget(objectName="sidebar", headerHidden=True)
+        self.tree_files.currentItemChanged.connect(lambda cur, _prev: self.show_tree_file(cur))
+        self.tree_title = QLabel()
+        self.tree_content = QPlainTextEdit(readOnly=True, font=mono, lineWrapMode=QPlainTextEdit.NoWrap)
+        tree_head = QFrame(objectName="diffHeader")
+        th = QHBoxLayout(tree_head)
+        th.setContentsMargins(8, 4, 6, 4)
+        th.addWidget(self.tree_title)
+        tree_right = QWidget()
+        tv = QVBoxLayout(tree_right)
+        tv.setContentsMargins(0, 0, 0, 0)
+        tv.setSpacing(0)
+        tv.addWidget(tree_head)
+        tv.addWidget(self.tree_content)
+        tree_split = QSplitter()
+        tree_split.addWidget(self.tree_files)
+        tree_split.addWidget(tree_right)
+        tree_split.setSizes([320, 700])
+        self.detail.addTab(tree_split, "Dateibaum")
+        self.detail.currentChanged.connect(lambda _i: self.fill_tree())
+        self.detail_hash, self.detail_status, self.tree_hash = None, {}, None
         history = QSplitter(Qt.Vertical)
         history.addWidget(self.log)
         history.addWidget(self.detail)
@@ -918,7 +944,8 @@ class RepoTab(QWidget):
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             stdin = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
-            r = subprocess.run(["git", "-C", self.repo, *args], capture_output=True, text=True, env=GIT_ENV, **stdin)
+            r = subprocess.run(["git", "-C", self.repo, *args], capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", env=GIT_ENV, **stdin)
         finally:
             QApplication.restoreOverrideCursor()
         self.last_rc = r.returncode
@@ -1321,6 +1348,9 @@ class RepoTab(QWidget):
         diff = (lambda *a: self.git("diff", "-M", *a, base, h)) if base else (lambda *a: self.git("show", "--format=", "-M", *a, h))
         files = [line.split("\t") for line in diff("--name-status").splitlines()]
         self.detail_files = [f[-1] for f in files]
+        self.detail_hash, self.detail_status = full, {f[-1]: f[0][:1] for f in files}
+        self.tree_hash = None  # Dateibaum gehört zum vorigen Commit
+        self.fill_tree()
         e = html.escape
         dim = COLORS["dim"]
 
@@ -1350,6 +1380,67 @@ class RepoTab(QWidget):
         patch = diff("--patch")
         self.commit_files = [f[0] for f in file_diffs(patch)]
         self.commit_view.setHtml((self.parent_switch(plist, parent) if base else "") + patch_html(patch))
+
+    def fill_tree(self):
+        """Baut den Dateibaum erst, wenn der Tab sichtbar ist (bei großen Repos teuer)."""
+        if self.detail.currentIndex() != 2 or not self.detail_hash or self.tree_hash == self.detail_hash:
+            return
+        self.tree_hash = h = self.detail_hash
+        # ponytail: bei sehr großen Repos (100k+ Dateien) langsam; dann Ordner erst beim Aufklappen laden
+        paths = [p for p in self.git("ls-tree", "-r", "--name-only", "-z", h).split("\0") if p]
+        # Ordner vor Dateien, jeweils alphabetisch – wie im Dateimanager
+        paths.sort(key=lambda p: [(0, d.lower()) for d in p.split("/")[:-1]] + [(1, p.rsplit("/", 1)[-1].lower())])
+        t = self.tree_files
+        t.blockSignals(True)
+        t.clear()
+        folders, first_changed = {"": t.invisibleRootItem()}, None
+        bold = QFont(t.font())
+        bold.setBold(True)
+
+        def folder(path):
+            if path not in folders:
+                parent, _, name = path.rpartition("/")
+                it = QTreeWidgetItem(folder(parent), [name])
+                it.setIcon(0, QIcon.fromTheme("folder"))
+                folders[path] = it
+            return folders[path]
+
+        for path in paths:
+            parent, _, name = path.rpartition("/")
+            it = QTreeWidgetItem(folder(parent), [name])
+            it.setData(0, Qt.UserRole, path)
+            it.setIcon(0, QIcon.fromTheme("text-x-generic"))
+            status = self.detail_status.get(path)
+            if status:  # in diesem Commit geändert: hervorheben und Ordner aufklappen
+                it.setForeground(0, QColor(STATUS_COLORS.get(status, COLORS["text"])))
+                it.setFont(0, bold)
+                node = it.parent()
+                while node:
+                    node.setExpanded(True)
+                    node = node.parent()
+                first_changed = first_changed or it
+        t.blockSignals(False)
+        self.tree_title.clear()
+        self.tree_content.clear()
+        if first_changed:
+            t.setCurrentItem(first_changed)
+
+    def show_tree_file(self, item):
+        path = item and item.data(0, Qt.UserRole)
+        if not path:  # Ordner
+            return
+        self.tree_title.setText(path)
+        r = subprocess.run(["git", "-C", self.repo, "cat-file", "blob", f"{self.tree_hash}:{path}"],
+                           capture_output=True)
+        data, limit = r.stdout, 2_000_000
+        if b"\0" in data[:8000]:
+            self.tree_content.setPlainText(f"Binärdatei ({len(data):,} Bytes)".replace(",", "."))
+        else:
+            try:
+                text = data[:limit].decode("utf-8")
+            except UnicodeDecodeError:  # ältere Dateien sind oft Latin-1
+                text = data[:limit].decode("latin-1")
+            self.tree_content.setPlainText(text + ("\n\n… (gekürzt)" if len(data) > limit else ""))
 
     def parent_switch(self, parents, current):
         """Umschalter „Änderungen gegenüber Parent 1 | Parent 2“ für Merge-Commits."""
@@ -1509,6 +1600,439 @@ class RepoTab(QWidget):
         self.refresh()
 
 
+def git_out(repo, *args):
+    """git-Ausgabe für Repos ohne eigenen Tab (Repository-Übersicht)."""
+    r = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", stdin=subprocess.DEVNULL, env=GIT_ENV)
+    return r.stdout if r.returncode == 0 else ""
+
+
+MONTHS = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
+
+
+def relative_time(ts, now=None):
+    """Unix-Zeit -> „vor 3 Stunden“, „gestern“ usw."""
+    d = int((now or time.time()) - ts)
+    for limit, unit, one, many in ((60, 1, "gerade eben", "gerade eben"), (3600, 60, "vor 1 Minute", "vor {} Minuten"),
+                                   (86400, 3600, "vor 1 Stunde", "vor {} Stunden"),
+                                   (30 * 86400, 86400, "gestern", "vor {} Tagen"),
+                                   (365 * 86400, 30 * 86400, "vor 1 Monat", "vor {} Monaten")):
+        if d < limit:
+            n = max(1, d // unit)
+            return one if n == 1 else many.format(n)
+    n = d // (365 * 86400)
+    return "vor 1 Jahr" if n == 1 else f"vor {n} Jahren"
+
+
+def monthly_series(rows, top=7):
+    """[(autor, "JJJJ-MM")] -> (monate, [(autor, zähler)]): die `top` aktivsten Autoren, Rest als „Andere“.
+
+    Die Monate sind lückenlos vom ersten bis zum letzten Commit.
+    """
+    if not rows:
+        return [], []
+    first, last = min(m for _, m in rows), max(m for _, m in rows)
+    y, mo = int(first[:4]), int(first[5:])
+    months = []
+    while f"{y:04d}-{mo:02d}" <= last:
+        months.append(f"{y:04d}-{mo:02d}")
+        y, mo = (y + 1, 1) if mo == 12 else (y, mo + 1)
+    index = {m: i for i, m in enumerate(months)}
+    totals = {}
+    for author, _ in rows:
+        totals[author] = totals.get(author, 0) + 1
+    leaders = sorted(totals, key=lambda a: (-totals[a], a))[:top]
+    series = {a: [0] * len(months) for a in leaders}
+    other = [0] * len(months)
+    for author, month in rows:
+        (series[author] if author in series else other)[index[month]] += 1
+    result = [(a, series[a]) for a in leaders]
+    if any(other):
+        result.append(("Andere", other))
+    return months, result
+
+
+# Kategorische Palette für den dunklen Hintergrund (geprüft auf Farbsehschwächen); „Andere“ ist neutral grau
+CHART_COLORS = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9"]
+OTHER_COLOR = "#8a8a8a"
+
+
+class CommitChart(QWidget):
+    """Liniendiagramm „Commits pro Monat“ je Autor, mit Fadenkreuz und Tooltip beim Überfahren."""
+
+    def __init__(self):
+        super().__init__(mouseTracking=True, minimumHeight=380)
+        self.months, self.series, self.hover = [], [], None
+
+    def set_data(self, months, series):
+        self.months, self.series, self.hover = months, series, None
+        self.update()
+
+    def color(self, i, name):
+        return QColor(OTHER_COLOR if name == "Andere" else CHART_COLORS[i % len(CHART_COLORS)])
+
+    def legend_rows(self, fm, width):
+        """Legende in Zeilen umbrechen: [[(x, i, name)], ...]."""
+        rows, row, x = [], [], 0
+        for i, (name, _) in enumerate(self.series):
+            w = 22 + fm.horizontalAdvance(name) + 18
+            if row and x + w > width:
+                rows.append(row)
+                row, x = [], 0
+            row.append((x, i, name))
+            x += w
+        return rows + ([row] if row else [])
+
+    def plot_rect(self):
+        fm = self.fontMetrics()
+        legend_h = (len(self.legend_rows(fm, self.width() - 60)) * (fm.height() + 6)) if len(self.series) > 1 else 0
+        return QRectF(52, 12, max(10, self.width() - 70), max(10, self.height() - 12 - 46 - legend_h))
+
+    def x_at(self, r, i):
+        return r.left() + (r.width() * i / max(1, len(self.months) - 1))
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        fm = p.fontMetrics()
+        dim, grid = QColor(COLORS["dim"]), QColor("#303034")
+        if not self.months:
+            p.setPen(dim)
+            p.drawText(self.rect(), Qt.AlignCenter, "Keine Commits.")
+            return
+        r = self.plot_rect()
+        peak = max(max(c) for _, c in self.series) or 1
+        raw = peak / 5
+        mag = 10 ** (len(str(int(raw))) - 1) if raw >= 1 else 1
+        step = next(m * mag for m in (1, 2, 5, 10) if m * mag >= raw)
+        top = step * -(-peak // step)
+        y_of = lambda v: r.bottom() - r.height() * v / top
+
+        # Raster und Achsenbeschriftung zurückhaltend
+        for v in range(0, int(top) + 1, int(step)):
+            y = y_of(v)
+            p.setPen(QPen(grid, 1))
+            p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
+            p.setPen(dim)
+            p.drawText(QRectF(0, y - 8, r.left() - 8, 16), Qt.AlignRight | Qt.AlignVCenter, str(v))
+        every = max(1, -(-len(self.months) // max(1, int(r.width() // 70))))
+        for i in range(0, len(self.months), every):
+            y, m = self.months[i].split("-")
+            label = f"{MONTHS[int(m) - 1]} {y}"
+            x = min(max(self.x_at(r, i), 40), self.width() - 40)  # Randbeschriftungen nicht abschneiden
+            p.drawText(QRectF(x - 40, r.bottom() + 6, 80, 18), Qt.AlignCenter, label)
+
+        # Linien: „Andere“ zuerst, damit sie unter den benannten Autoren liegt
+        order = sorted(range(len(self.series)), key=lambda i: self.series[i][0] != "Andere")
+        for i in order:
+            name, counts = self.series[i]
+            path = QPainterPath(QPointF(self.x_at(r, 0), y_of(counts[0])))
+            for j, c in enumerate(counts[1:], 1):
+                path.lineTo(self.x_at(r, j), y_of(c))
+            p.setPen(QPen(self.color(i, name), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            p.drawPath(path)
+
+        # Fadenkreuz am überfahrenen Monat
+        if self.hover is not None:
+            x = self.x_at(r, self.hover)
+            p.setPen(QPen(QColor("#6a6a70"), 1, Qt.DashLine))
+            p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()))
+            for i, (name, counts) in enumerate(self.series):
+                if counts[self.hover]:
+                    p.setPen(QPen(QColor(COLORS["base"]), 2))
+                    p.setBrush(self.color(i, name))
+                    p.drawEllipse(QPointF(x, y_of(counts[self.hover])), 4.5, 4.5)
+
+        # Legende unter dem Diagramm (Text in Textfarbe, Farbe nur am Strich)
+        if len(self.series) > 1:
+            y0 = r.bottom() + 34
+            for row_i, row in enumerate(self.legend_rows(fm, self.width() - 60)):
+                y = y0 + row_i * (fm.height() + 6)
+                for x, i, name in row:
+                    x += r.left()
+                    p.setPen(QPen(self.color(i, name), 3, Qt.SolidLine, Qt.RoundCap))
+                    p.drawLine(QPointF(x, y + fm.height() / 2), QPointF(x + 16, y + fm.height() / 2))
+                    p.setPen(QColor(COLORS["text"]))
+                    p.drawText(QPointF(x + 22, y + fm.ascent()), name)
+
+    def mouseMoveEvent(self, event):
+        if not self.months:
+            return
+        r = self.plot_rect()
+        pos = event.position()
+        if not r.adjusted(-10, -10, 10, 10).contains(pos):
+            return self.leaveEvent(None)
+        i = round((pos.x() - r.left()) / max(1, r.width()) * (len(self.months) - 1))
+        i = min(max(i, 0), len(self.months) - 1)
+        if i != self.hover:
+            self.hover = i
+            self.update()
+            y, m = self.months[i].split("-")
+            lines = [f"<b>{MONTHS[int(m) - 1]} {y}</b>"]
+            values = sorted(((c[i], n) for n, c in self.series if c[i]), reverse=True)
+            lines += [f"{html.escape(n)}: {v}" for v, n in values] or ["keine Commits"]
+            QToolTip.showText(QCursor.pos(), "<br>".join(lines), self)
+
+    def leaveEvent(self, _event):
+        self.hover = None
+        QToolTip.hideText()
+        self.update()
+
+
+class RepoManager(QWidget):
+    """„Neuer Tab“: zuletzt geöffnete und bekannte Repositories, mit Übersicht und Statistik – wie in Fork."""
+    open_requested = Signal(str)
+
+    def __init__(self, settings):
+        super().__init__()
+        self.settings = settings
+        self.current = None
+        self.stats_for = None
+
+        self.list = QTreeWidget(objectName="sidebar", headerHidden=True, indentation=14)
+        self.list.currentItemChanged.connect(lambda cur, _prev: self.select(cur))
+        self.list.itemDoubleClicked.connect(lambda it: it.data(0, Qt.UserRole) and self.open(it.data(0, Qt.UserRole)))
+        self.list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self.list_menu)
+        add_btn = QPushButton("Hinzufügen…")
+        add_btn.clicked.connect(self.add_repo)
+        scan_btn = QPushButton("Ordner durchsuchen…")
+        scan_btn.clicked.connect(self.scan_folder)
+        btns = QHBoxLayout()
+        btns.setContentsMargins(8, 6, 8, 8)
+        btns.addWidget(add_btn)
+        btns.addWidget(scan_btn)
+        left = QWidget(objectName="sidebarPane")
+        lv = QVBoxLayout(left)
+        lv.setContentsMargins(0, 0, 0, 0)
+        lv.setSpacing(0)
+        lv.addWidget(self.list)
+        lv.addLayout(btns)
+
+        # Rechts: Kopf mit Name/Pfad/letztem Commit und „Öffnen“, darunter Übersicht/Statistik
+        self.headline = QLabel(objectName="repoHeadline")
+        self.path_label = QLabel()
+        self.last_label = QLabel()
+        self.open_btn = QPushButton("Öffnen", objectName="commitBtn")
+        self.open_btn.clicked.connect(lambda: self.current and self.open(self.current))
+        head = QHBoxLayout()
+        info = QVBoxLayout()
+        info.addWidget(self.headline)
+        info.addWidget(self.path_label)
+        info.addWidget(self.last_label)
+        head.addLayout(info)
+        head.addStretch()
+        head.addWidget(self.open_btn, alignment=Qt.AlignTop)
+        self.summary = QTextBrowser(openLinks=False)
+        self.chart = CommitChart()
+        stats = QWidget()
+        sv = QVBoxLayout(stats)
+        sv.addWidget(QLabel("<b style='font-size:12pt'>Commits pro Monat</b>"))
+        sv.addWidget(self.chart)
+        sv.addStretch()
+        self.pages = QTabWidget(objectName="detail", documentMode=True)
+        self.pages.addTab(self.summary, "Übersicht")
+        self.pages.addTab(stats, "Statistik")
+        self.pages.currentChanged.connect(lambda _i: self.load_stats())
+        right = QWidget()
+        rv = QVBoxLayout(right)
+        rv.setContentsMargins(16, 12, 16, 0)
+        rv.addLayout(head)
+        rv.addWidget(self.pages)
+        self.empty = QLabel("Wähle links ein Repository oder füge eines hinzu.", alignment=Qt.AlignCenter)
+        self.right = QStackedWidget()
+        self.right.addWidget(self.empty)
+        self.right.addWidget(right)
+
+        split = QSplitter()
+        split.addWidget(left)
+        split.addWidget(self.right)
+        split.setSizes([280, 1000])
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        title = QLabel("Repository-Verwaltung", objectName="managerTitle")
+        title.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        outer.addWidget(title)
+        outer.addWidget(split)
+        self.reload()
+
+    # --- Listen in den Einstellungen ---------------------------------------
+
+    def known(self):
+        return self.settings.value("known", [], type=list)
+
+    def recent(self):
+        return self.settings.value("recent", [], type=list)
+
+    def reload(self):
+        """Liste neu aufbauen: „Zuletzt geöffnet“ und alle bekannten Repos, nach Elternordner gruppiert."""
+        t = self.list
+        t.blockSignals(True)
+        t.clear()
+        selected = None
+
+        def entry(parent, path):
+            nonlocal selected
+            it = QTreeWidgetItem(parent, [os.path.basename(path)])
+            it.setData(0, Qt.UserRole, path)
+            it.setToolTip(0, path)
+            it.setIcon(0, QIcon.fromTheme("folder-git", QIcon.fromTheme("vcs-branch")))
+            if not os.path.isdir(path):
+                it.setForeground(0, QColor(COLORS["dim"]))
+                it.setToolTip(0, f"{path} (nicht gefunden)")
+            if path == self.current and selected is None:
+                selected = it
+
+        def section(title):
+            it = QTreeWidgetItem(t, [title])
+            it.setFlags(Qt.ItemIsEnabled)
+            f = it.font(0)
+            f.setBold(True)
+            it.setFont(0, f)
+            return it
+
+        sec = section("Zuletzt geöffnet")
+        for path in self.recent():
+            entry(sec, path)
+        sec = section("Repositories")
+        groups = {}
+        for path in sorted(self.known(), key=lambda p: (os.path.basename(os.path.dirname(p)).lower(), p.lower())):
+            parent = os.path.dirname(path)
+            if parent not in groups:
+                groups[parent] = QTreeWidgetItem(sec, [os.path.basename(parent) or parent])
+                groups[parent].setFlags(Qt.ItemIsEnabled)
+                groups[parent].setIcon(0, QIcon.fromTheme("folder"))
+                groups[parent].setToolTip(0, parent)
+            entry(groups[parent], path)
+        t.expandAll()
+        t.blockSignals(False)
+        if selected is None:  # sonst den zuletzt geöffneten zeigen
+            sec = t.topLevelItem(0)
+            selected = sec.child(0) if sec.childCount() else None
+        if selected:
+            t.setCurrentItem(selected)
+        else:
+            self.select(None)
+
+    def remember(self, paths):
+        known = self.known()
+        self.settings.setValue("known", known + [p for p in paths if p not in known])
+
+    def forget(self, path):
+        self.settings.setValue("known", [p for p in self.known() if p != path])
+        self.settings.setValue("recent", [p for p in self.recent() if p != path])
+        if self.current == path:
+            self.current = None
+        self.reload()
+
+    # --- Aktionen ----------------------------------------------------------
+
+    def open(self, path):
+        self.open_requested.emit(path)
+
+    def add_repo(self):
+        path = QFileDialog.getExistingDirectory(self, "Repository hinzufügen")
+        root = path and repo_root(path)
+        if path and not root:
+            return QMessageBox.warning(self, "Kein Git-Repo", f"{path} ist kein Git-Repository.")
+        if root:
+            self.remember([root])
+            self.current = root
+            self.reload()
+
+    def scan_folder(self):
+        """Findet Git-Repositories unterhalb eines Ordners (bis 4 Ebenen tief) und nimmt sie in die Liste auf."""
+        base = QFileDialog.getExistingDirectory(self, "Ordner nach Repositories durchsuchen")
+        if not base:
+            return
+        found = []
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            for dirpath, dirnames, _files in os.walk(base):
+                if ".git" in dirnames or os.path.isfile(os.path.join(dirpath, ".git")):
+                    found.append(os.path.realpath(dirpath))
+                    dirnames.clear()  # in Repos nicht weitersuchen
+                elif dirpath[len(base):].count(os.sep) >= 4:
+                    dirnames.clear()
+                else:
+                    dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "node_modules"]
+        finally:
+            QApplication.restoreOverrideCursor()
+        new = [p for p in found if p not in self.known()]
+        self.remember(found)
+        self.reload()
+        QMessageBox.information(self, "Ordner durchsuchen",
+                                f"{len(found)} Repositories gefunden, davon {len(new)} neu in der Liste.")
+
+    def list_menu(self, pos):
+        item = self.list.itemAt(pos)
+        path = item and item.data(0, Qt.UserRole)
+        if not path:
+            return
+        menu = QMenu(self)
+        menu.addAction("Öffnen", lambda: self.open(path))
+        menu.addAction("Ordner öffnen", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(path)))
+        menu.addSeparator()
+        menu.addAction("Aus der Liste entfernen", lambda: self.forget(path))
+        menu.exec(self.list.viewport().mapToGlobal(pos))
+
+    # --- Details -----------------------------------------------------------
+
+    def select(self, item):
+        path = item and item.data(0, Qt.UserRole)
+        if not path:
+            self.right.setCurrentIndex(0)
+            return
+        self.current = path
+        self.right.setCurrentIndex(1)
+        self.headline.setText(os.path.basename(path))
+        self.path_label.setText(f"<span style='color:{COLORS['dim']}'>{html.escape(path)}</span>")
+        if not repo_root(path):
+            self.last_label.setText("Nicht gefunden – evtl. verschoben oder gelöscht.")
+            self.open_btn.setEnabled(False)
+            self.summary.clear()
+            self.chart.set_data([], [])
+            self.stats_for = path
+            return
+        self.open_btn.setEnabled(True)
+        last = git_out(path, "log", "-1", "--format=%ct").strip()
+        self.last_label.setText(f"Letzter Commit: <b>{relative_time(int(last))}</b>" if last else "Noch keine Commits.")
+        self.show_summary(path)
+        self.stats_for = None
+        self.load_stats()
+
+    def show_summary(self, path):
+        g = lambda *a: git_out(path, *a).strip()
+        dim, e = COLORS["dim"], html.escape
+        first = g("log", "--max-parents=0", "--format=%cd", "--date=format:%d.%m.%Y", "-1")
+        rows = [
+            ("Aktueller Branch", g("branch", "--show-current") or "(detached)"),
+            ("Commits (alle Branches)", g("rev-list", "--count", "--all") or "0"),
+            ("Autoren", str(len(g("shortlog", "-sn", "--all").splitlines()))),
+            ("Branches", str(len(g("for-each-ref", "--format=x", "refs/heads").splitlines()))),
+            ("Tags", str(len(g("for-each-ref", "--format=x", "refs/tags").splitlines()))),
+            ("Remote origin", g("remote", "get-url", "origin") or "–"),
+            ("Lokale Änderungen", f"{len(g('status', '--porcelain').splitlines())} Datei(en)"),
+            ("Erster Commit", first or "–"),
+        ]
+        self.summary.setHtml("<table cellspacing='8'>" + "".join(
+            f"<tr><td style='color:{dim}'>{e(k)}</td><td><b>{e(v)}</b></td></tr>" for k, v in rows) + "</table>")
+
+    def load_stats(self):
+        """Statistik erst berechnen, wenn der Tab sichtbar ist (git log über alle Commits)."""
+        if self.pages.currentIndex() != 1 or not self.current or self.stats_for == self.current:
+            return
+        self.stats_for = self.current
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            out = git_out(self.current, "log", "--all", "--no-merges", "--format=%aN%x1f%ad", "--date=format:%Y-%m")
+        finally:
+            QApplication.restoreOverrideCursor()
+        rows = [tuple(line.split("\x1f", 1)) for line in out.splitlines() if "\x1f" in line]
+        self.chart.set_data(*monthly_series(rows))
+
+
 def open_terminal(path):
     """Startet ein Terminal im Repo-Ordner; Rückgabe False, wenn keins gefunden wurde."""
     for term in (os.environ.get("TERMINAL"), "konsole", "kgx", "gnome-terminal", "kitty", "alacritty",
@@ -1529,15 +2053,17 @@ class MainWindow(QMainWindow):
         self.tabs.tabBar().setExpanding(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.currentChanged.connect(self.on_tab_changed)
-        plus = QToolButton(text="+", autoRaise=True, toolTip="Repository öffnen (Strg+O)")
-        plus.clicked.connect(self.open_dialog)
+        plus = QToolButton(text="+", autoRaise=True, toolTip="Neuer Tab: Repository-Verwaltung (Strg+T)")
+        plus.clicked.connect(self.show_manager)
+        self.tabs.tabBar().tabMoved.connect(lambda *_: self.save_session())
         self.tabs.setCornerWidget(plus, Qt.TopRightCorner)
 
         # Aktionen: einmal definiert, in Toolbar und Menü benutzt
         def action(text, icon, slot, shortcut=None, on_tab=True):
             a = QAction(QIcon.fromTheme(icon), text, self)
             if on_tab:  # wirkt auf das Repo im aktiven Tab
-                a.triggered.connect(lambda: self.tabs.currentWidget() and slot(self.tabs.currentWidget()))
+                a.triggered.connect(lambda: isinstance(self.tabs.currentWidget(), RepoTab)
+                                    and slot(self.tabs.currentWidget()))
             else:
                 a.triggered.connect(slot)
             if shortcut:
@@ -1553,8 +2079,9 @@ class MainWindow(QMainWindow):
         a_branch = action("Neuer Branch", "vcs-branch", lambda t: t.new_branch())
         a_term = action("Terminal", "utilities-terminal", self.terminal)
         a_refresh = action("Aktualisieren", "view-refresh", lambda t: t.refresh(), "F5")
-        a_close = action("Tab schließen", "tab-close", lambda t: self.close_tab(self.tabs.indexOf(t)), "Ctrl+W")
-        self.repo_actions = [a_fetch, a_pull, a_push, a_stash, a_pop, a_branch, a_term, a_refresh, a_close]
+        a_close = action("Tab schließen", "tab-close", lambda: self.close_tab(self.tabs.currentIndex()), "Ctrl+W",
+                         on_tab=False)
+        self.repo_actions = [a_fetch, a_pull, a_push, a_stash, a_pop, a_branch, a_term, a_refresh]
 
         menu = self.menuBar().addMenu("Datei")
         menu.addAction(a_open)
@@ -1590,21 +2117,10 @@ class MainWindow(QMainWindow):
         tb.addAction(a_branch)
         tb.addAction(a_term)
 
-        welcome = QWidget()
-        wl = QVBoxLayout(welcome)
-        wl.addStretch()
-        open_btn = QPushButton("Repository öffnen…")
-        open_btn.clicked.connect(self.open_dialog)
-        wl.addWidget(QLabel("Kein Repository geöffnet."), alignment=Qt.AlignCenter)
-        wl.addWidget(open_btn, alignment=Qt.AlignCenter)
-        wl.addStretch()
-        self.pages = QStackedWidget()
-        self.pages.addWidget(welcome)
-        self.pages.addWidget(self.tabs)
-        self.setCentralWidget(self.pages)
+        self.setCentralWidget(self.tabs)
         self.resize(1300, 820)
 
-        for key, slot in (("Ctrl+T", self.open_dialog),
+        for key, slot in (("Ctrl+T", self.show_manager),
                           ("Ctrl+Tab", lambda: self.step(1)), ("Ctrl+Shift+Tab", lambda: self.step(-1))):
             QShortcut(QKeySequence(key), self, slot)
 
@@ -1613,10 +2129,36 @@ class MainWindow(QMainWindow):
             current = self.settings.value("current", 0, type=int)
         else:
             current = 0
+        self.restoring = True  # beim Wiederherstellen nicht bei jedem Tab speichern
         for path in paths:
             self.add_repo(path, quiet=True)
-        self.tabs.setCurrentIndex(min(current, self.tabs.count() - 1))
+        self.restoring = False
+        if self.tabs.count():
+            self.tabs.setCurrentIndex(min(current, self.tabs.count() - 1))
+        else:
+            self.show_manager()
         self.update_page()
+
+    def repo_tabs(self):
+        return [w for w in map(self.tabs.widget, range(self.tabs.count())) if isinstance(w, RepoTab)]
+
+    def save_session(self):
+        """Offene Repos sofort merken – so bleiben sie auch nach Absturz oder kill offen."""
+        if self.restoring:
+            return
+        tabs = self.repo_tabs()
+        self.settings.setValue("repos", [t.repo for t in tabs])
+        cur = self.tabs.currentWidget()
+        self.settings.setValue("current", tabs.index(cur) if cur in tabs else 0)
+
+    def show_manager(self):
+        """Repository-Verwaltung als „Neuer Tab“ (gibt es höchstens einmal)."""
+        for i in range(self.tabs.count()):
+            if isinstance(self.tabs.widget(i), RepoManager):
+                return self.tabs.setCurrentIndex(i)
+        manager = RepoManager(self.settings)
+        manager.open_requested.connect(self.add_repo)
+        self.tabs.setCurrentIndex(self.tabs.addTab(manager, "Neuer Tab"))
 
     def add_repo(self, path, quiet=False):
         root = repo_root(path)
@@ -1624,16 +2166,27 @@ class MainWindow(QMainWindow):
             if not quiet:
                 QMessageBox.warning(self, "Kein Git-Repo", f"{path} ist kein Git-Repository.")
             return
-        for i in range(self.tabs.count()):  # schon offen -> nur hinwechseln
-            if self.tabs.widget(i).repo == root:
-                return self.tabs.setCurrentIndex(i)
+        recent = self.settings.value("recent", [], type=list)
+        self.settings.setValue("recent", [root] + [r for r in recent if r != root][:9])
+        known = self.settings.value("known", [], type=list)
+        if root not in known:
+            self.settings.setValue("known", known + [root])
+        for tab in self.repo_tabs():  # schon offen -> nur hinwechseln
+            if tab.repo == root:
+                return self.tabs.setCurrentWidget(tab)
+        # Ein offener „Neuer Tab“ wird durch das Repo ersetzt, wie in Fork
+        manager = next((w for w in map(self.tabs.widget, range(self.tabs.count())) if isinstance(w, RepoManager)), None)
         tab = RepoTab(root)
-        i = self.tabs.addTab(tab, tab.name)
-        self.tabs.setTabToolTip(i, root)
         tab.changed.connect(lambda t=tab: self.update_titles(t))
-        self.tabs.setCurrentIndex(i)
+        i = self.tabs.insertTab(self.tabs.indexOf(manager) if manager else self.tabs.count(), tab, tab.name)
+        self.tabs.setTabToolTip(i, root)
+        if manager:
+            self.tabs.removeTab(self.tabs.indexOf(manager))
+            manager.deleteLater()
+        self.tabs.setCurrentWidget(tab)
         self.update_titles(tab)
         self.update_page()
+        self.save_session()
 
     def open_dialog(self):
         path = QFileDialog.getExistingDirectory(self, "Repository öffnen")
@@ -1665,11 +2218,14 @@ class MainWindow(QMainWindow):
     def close_tab(self, i):
         if i >= 0:
             tab = self.tabs.widget(i)
-            if not self.stop_running([tab]):
+            if isinstance(tab, RepoTab) and not self.stop_running([tab]):
                 return
             self.tabs.removeTab(i)
             tab.deleteLater()
+            if not self.tabs.count():  # letzter Tab zu: Verwaltung zeigen
+                self.show_manager()
             self.update_page()
+            self.save_session()
 
     def step(self, d):
         if self.tabs.count():
@@ -1677,9 +2233,13 @@ class MainWindow(QMainWindow):
 
     def on_tab_changed(self, i):
         tab = self.tabs.widget(i)
-        if tab:
+        if isinstance(tab, RepoTab):
             tab.refresh()  # Repo kann sich draußen geändert haben
             self.update_titles(tab)
+        elif isinstance(tab, RepoManager):
+            tab.reload()  # „Zuletzt geöffnet“ kann sich geändert haben
+        self.update_page()
+        self.save_session()
 
     def update_titles(self, tab):
         i = self.tabs.indexOf(tab)
@@ -1693,21 +2253,21 @@ class MainWindow(QMainWindow):
                                    f"<span style='color:{COLORS['dim']}'>⑂ {html.escape(tab.branch)}</span>")
 
     def update_page(self):
-        has_tabs = bool(self.tabs.count())
-        self.pages.setCurrentIndex(1 if has_tabs else 0)
+        """Toolbar nur für Repo-Tabs aktiv; im „Neuer Tab“ eine Begrüßung statt Repo/Branch."""
+        is_repo = isinstance(self.tabs.currentWidget(), RepoTab)
         for a in self.repo_actions:
-            a.setEnabled(has_tabs)
-        if not has_tabs:
+            a.setEnabled(is_repo)
+        if not is_repo:
             self.setWindowTitle("Git GUI")
-            self.repo_info.clear()
+            self.repo_info.setText(f"<b style='font-size:11pt'>Willkommen!</b><br>"
+                                   f"<span style='color:{COLORS['dim']}'>Öffne ein Repository</span>")
             self.busy.hide()
             self.busy_label.clear()
 
     def closeEvent(self, event):
-        if not self.stop_running([self.tabs.widget(i) for i in range(self.tabs.count())]):
+        if not self.stop_running(self.repo_tabs()):
             return event.ignore()
-        self.settings.setValue("repos", [self.tabs.widget(i).repo for i in range(self.tabs.count())])
-        self.settings.setValue("current", self.tabs.currentIndex())
+        self.save_session()
         super().closeEvent(event)
 
 
@@ -1750,13 +2310,16 @@ if __name__ == "__main__":
                  "diff --git a/o b/n\nsimilarity index 90%\nrename from o\nrename to n\n"
                  "diff --git a/neu b/neu\nnew file mode 100644\n--- /dev/null\n+++ b/neu\n@@ -0,0 +1 @@\n+z\n")
         assert [f[:3] for f in file_diffs(patch)] == [("x", "x", "M"), ("n", "o → n", "R"), ("neu", "neu", "A")]
+        months, series = monthly_series([("A", "2024-11"), ("A", "2025-01"), ("B", "2025-01"), ("C", "2025-01")], top=2)
+        assert months == ["2024-11", "2024-12", "2025-01"]
+        assert series == [("A", [1, 0, 1]), ("B", [0, 0, 1]), ("Andere", [0, 0, 1])]
+        assert relative_time(0, now=30) == "gerade eben" and relative_time(0, now=3 * 3600) == "vor 3 Stunden"
+        assert relative_time(0, now=86400 + 5) == "gestern" and relative_time(0, now=2 * 365 * 86400) == "vor 2 Jahren"
         print("ok")
         sys.exit(0)
     app = QApplication(sys.argv)
     setup_app(app)
     # Ohne Argumente: letzte Sitzung, sonst das aktuelle Verzeichnis (falls Repo)
     win = MainWindow(sys.argv[1:])
-    if not win.tabs.count() and repo_root("."):
-        win.add_repo(".")
     win.show()
     sys.exit(app.exec())
