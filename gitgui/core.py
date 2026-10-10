@@ -400,17 +400,24 @@ def parse_ssh_remote(url):
 
 
 def ssh_command_for(key):
-    """core.sshCommand, das genau diesen Schlüssel nimmt (IdentitiesOnly: keine anderen aus dem Agent probieren)."""
+    """SSH-Befehl, der genau diesen Schlüssel nimmt (IdentitiesOnly: keine anderen aus dem Agent probieren)."""
     return f"ssh -i {shlex.quote(key)} -o IdentitiesOnly=yes"
 
 
-def ssh_key_from_command(command):
-    """Schlüsseldatei aus einem core.sshCommand („ssh -i datei …“) oder None."""
-    try:
-        parts = shlex.split(command)
-    except ValueError:
-        return None
-    return parts[parts.index("-i") + 1] if "-i" in parts[:-1] else None
+_ORIGINAL_SSH_COMMAND = GIT_ENV.get("GIT_SSH_COMMAND")
+
+
+def apply_ssh_key(key):
+    """Programmweiten SSH-Schlüssel für alle git-Aufrufe der GUI setzen (None = Standard von SSH).
+
+    Wirkt nur auf die GUI, nicht auf das Terminal oder die globale Git-Konfiguration.
+    """
+    if key:
+        GIT_ENV["GIT_SSH_COMMAND"] = ssh_command_for(key)
+    elif _ORIGINAL_SSH_COMMAND:
+        GIT_ENV["GIT_SSH_COMMAND"] = _ORIGINAL_SSH_COMMAND
+    else:
+        GIT_ENV.pop("GIT_SSH_COMMAND", None)
 
 
 def ssh_test_result(code, output):

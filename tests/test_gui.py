@@ -335,44 +335,51 @@ class RemoteTest(GuiTestCase):
 
 
 class SshKeyTest(GuiTestCase):
-    def test_choose_key_and_test_connection(self):
+    def test_program_wide_key_used_by_git_and_connection_test(self):
         from PySide6.QtWidgets import QFileDialog
+        from gitgui.core import apply_ssh_key
+        self.addCleanup(apply_ssh_key, None)
         repo = make_repo(self.path("r"))
         commit(repo, "init")
         git(repo, "remote", "add", "origin", "git@example.com:name/repo.git")
         git(repo, "remote", "add", "web", "https://example.com/name/repo.git")
         key = self.path("id test")  # Leerzeichen im Pfad: muss sauber gequotet werden
-        for suffix, text in (("", "privat"), (".pub", "öffentlich")):
-            write(self.tmp.name, f"id test{suffix}", text)
+        for suffix in ("", ".pub"):
+            write(self.tmp.name, f"id test{suffix}", "schlüssel")
         old = QFileDialog.getOpenFileName
         QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (key + ".pub", ""))  # aus Versehen die .pub
         self.addCleanup(setattr, QFileDialog, "getOpenFileName", old)
         win = self.window(repo)
-        tab = win.tabs.currentWidget()
-        tab.choose_ssh_key()
-        self.assertEqual(tab.ssh_key(), key)
-        tab.node_menu("Remotes/origin", QPoint(0, 0))
-        self.assertIn("SSH-Schlüssel für dieses Repo… (id test)", FakeMenu.actions_by_text())
-        self.assertIn("Eigenen SSH-Schlüssel entfernen (Standard nutzen)", FakeMenu.actions_by_text())
-        self.assertEqual(git(repo, "config", "core.sshCommand").strip(), f"ssh -i '{key}' -o IdentitiesOnly=yes")
-        # Verbindungstest mit einem Stand-in für ssh, das wie GitHub antwortet
+        win.choose_ssh_key()
+        self.assertEqual(GIT_ENV["GIT_SSH_COMMAND"], f"ssh -i '{key}' -o IdentitiesOnly=yes")
+        self.assertEqual(win.a_ssh_key.text(), "SSH-Schlüssel wählen… (aktuell: id test)")
+        unset = subprocess.run(["git", "-C", repo, "config", "--get", "core.sshCommand"], capture_output=True)
+        self.assertEqual(unset.returncode, 1)  # Repo-Konfiguration bleibt unberührt
+        apply_ssh_key(None)
+        self.assertEqual(self.window().ssh_key(), key)  # neues Fenster liest die Einstellung und setzt sie wieder
+        self.assertEqual(GIT_ENV["GIT_SSH_COMMAND"], f"ssh -i '{key}' -o IdentitiesOnly=yes")
+        # Stand-in für ssh, das die Argumente mitschreibt und wie GitHub antwortet
         fake = self.path("fake-ssh")
         with open(fake, "w") as f:
-            f.write('#!/bin/sh\necho "args: $*" > "$(dirname "$0")/ssh-args"\n'
+            f.write('#!/bin/sh\necho "$*" >> "$(dirname "$0")/ssh-args"\n'
                     'echo "Hi test! You\'ve successfully authenticated, but there is no shell." >&2\nexit 1\n')
         os.chmod(fake, 0o755)
-        git(repo, "config", "core.sshCommand", f"{fake} -i '{key}' -o IdentitiesOnly=yes")
-        tab.test_ssh("origin")
+        GIT_ENV["GIT_SSH_COMMAND"] = f"{fake} -i '{key}' -o IdentitiesOnly=yes"
+        tab = win.tabs.currentWidget()
+        win.test_ssh()  # über das Menü: nimmt origin
         self.wait(lambda: self.messages)
         self.assertIn("Anmeldung klappt", self.messages[-1])
+        tab.git("ls-remote", "origin")  # echter git-Aufruf der GUI benutzt denselben Schlüssel
         with open(self.path("ssh-args")) as f:
-            args = f.read()
-        self.assertIn(f"-i {key} -o IdentitiesOnly=yes -T", args)
-        self.assertTrue(args.strip().endswith("git@example.com"))
+            calls = f.read().splitlines()
+        self.assertTrue(calls[0].startswith(f"-i {key} -o IdentitiesOnly=yes -T"))
+        self.assertTrue(calls[1].startswith(f"-i {key} -o IdentitiesOnly=yes"))
+        self.assertIn("git@example.com", calls[1])
         tab.test_ssh("web")
         self.assertIn("keine SSH-Adresse", self.messages[-1])
-        tab.remove_ssh_key()
-        self.assertIsNone(tab.ssh_key())
+        win.set_ssh_key(None)
+        self.assertNotIn("GIT_SSH_COMMAND", GIT_ENV)
+        self.assertFalse(win.a_ssh_clear.isEnabled())
 
 
 class AutoRefreshTest(GuiTestCase):
@@ -424,8 +431,34 @@ class ManagerTest(GuiTestCase):
 
 
 class AskpassTest(GuiTestCase):
-    def test_credentials_dialog_answers_git(self):
-        """Ein passwortgeschütztes HTTP-Repo: Git fragt über unseren --askpass-Weg nach Benutzer und Passwort."""
+    def test_auto_fetch_never_asks_for_credentials(self):
+        """Ein Remote, der eine Anmeldung verlangt: der automatische Fetch bleibt still, ein normaler fragt nach."""
+        url = self.auth_server()
+        repo = make_repo(self.path("r"))
+        commit(repo, "init")
+        git(repo, "remote", "add", "github", url)
+        asked = self.path("asked")
+        recorder = self.path("askpass-recorder.sh")
+        with open(recorder, "w") as f:
+            f.write(f'#!/bin/sh\necho "$*" >> {shlex.quote(asked)}\necho falsch\n')
+        os.chmod(recorder, 0o755)
+        old = GIT_ENV.get("GIT_ASKPASS")
+        GIT_ENV["GIT_ASKPASS"] = recorder
+        self.addCleanup(lambda: GIT_ENV.update(GIT_ASKPASS=old) if old else GIT_ENV.pop("GIT_ASKPASS", None))
+        win = self.window(repo)
+        tab = win.tabs.currentWidget()
+        tab.act_async("fetch", "github", quiet=True)
+        self.wait(lambda: not tab.proc)
+        self.assertFalse(os.path.exists(asked))  # kein Anmeldedialog im Hintergrund
+        self.assertIn("Automatischer Fetch", win.statusBar().currentMessage())
+        self.assertEqual(self.messages, [])
+        tab.act_async("fetch", "github")
+        self.wait(lambda: not tab.proc)
+        self.assertTrue(os.path.exists(asked))  # selbst angestoßen: Git darf fragen
+        self.assertTrue(self.messages and self.messages[-1].startswith("Anmeldung fehlgeschlagen"))
+
+    def auth_server(self):
+        """Passwortgeschütztes HTTP-Git-Repo (Benutzer anton, Passwort geheim); gibt die Adresse zurück."""
         web = self.path("web")
         git(self.tmp.name, "init", "-q", "--bare", "-b", "main", os.path.join(web, "repo.git"))
         git(os.path.join(web, "repo.git"), "update-server-info")
@@ -445,6 +478,11 @@ class AskpassTest(GuiTestCase):
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Auth, directory=web))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_address[1]}/repo.git"
+
+    def test_credentials_dialog_answers_git(self):
+        """Ein passwortgeschütztes HTTP-Repo: Git fragt über unseren --askpass-Weg nach Benutzer und Passwort."""
+        url = self.auth_server()
         # Startskript wie install_askpass, nur dass der Dialog sich selbst beantwortet
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         code = ("import sys; from PySide6.QtWidgets import QInputDialog; "
@@ -456,7 +494,6 @@ class AskpassTest(GuiTestCase):
             f.write(f"#!/bin/sh\nPYTHONPATH={shlex.quote(root)} exec {shlex.quote(sys.executable)} -c "
                     f"{shlex.quote(code)} \"$@\"\n")
         os.chmod(askpass, 0o755)
-        url = f"http://127.0.0.1:{server.server_address[1]}/repo.git"
         result = subprocess.run(["git", "ls-remote", url], capture_output=True, text=True,
                                 env={**GIT_ENV, "GIT_ASKPASS": askpass})
         self.assertEqual(result.returncode, 0, result.stderr)

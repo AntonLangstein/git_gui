@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from .theme import COLORS, apply_theme
-from .core import repo_root, view_option
+from .core import apply_ssh_key, repo_root, view_option
 from .repotab import RepoTab
 from .manager import RepoManager
 
@@ -120,6 +120,15 @@ class MainWindow(QMainWindow):
         # „Wie das System“ soll auch einem späteren Umschalten in den Systemeinstellungen folgen
         QApplication.styleHints().colorSchemeChanged.connect(
             lambda _scheme: self.settings.value("theme", "dark") == "system" and self.set_theme("system"))
+
+        # SSH-Schlüssel gilt für die ganze GUI (alle Repos), nicht nur für ein Repo
+        menu = self.menuBar().addMenu("Einstellungen")
+        self.a_ssh_key = menu.addAction("SSH-Schlüssel wählen…", self.choose_ssh_key)
+        self.a_ssh_clear = menu.addAction("Eigenen SSH-Schlüssel entfernen (Standard nutzen)",
+                                          lambda: self.set_ssh_key(None))
+        menu.addAction("SSH-Verbindung testen", self.test_ssh)
+        apply_ssh_key(self.ssh_key())
+        self.update_ssh_actions()
 
         tb = QToolBar(objectName="main", movable=False, floatable=False)
         tb.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
@@ -233,6 +242,41 @@ class MainWindow(QMainWindow):
         for tab in self.repo_tabs():
             if tab.git("remote").strip():
                 tab.act_async("fetch", "--all", "--prune", quiet=True)
+
+    def ssh_key(self):
+        return self.settings.value("ssh_key", "") or None
+
+    def choose_ssh_key(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Privaten SSH-Schlüssel wählen (nicht die .pub-Datei)",
+                                              self.ssh_key() or os.path.expanduser("~/.ssh"))
+        if not path:
+            return
+        path = path.removesuffix(".pub")  # aus Versehen den öffentlichen Schlüssel gewählt
+        if not os.path.isfile(path):
+            return QMessageBox.information(self, "SSH-Schlüssel", f"Zu „{path}.pub“ fehlt der private Schlüssel.")
+        self.set_ssh_key(path)
+
+    def set_ssh_key(self, path):
+        self.settings.setValue("ssh_key", path or "")
+        apply_ssh_key(path)
+        self.update_ssh_actions()
+        self.statusBar().showMessage(f"SSH-Schlüssel für alle Repos: {path}" if path else
+                                     "Kein eigener SSH-Schlüssel – es gelten ~/.ssh/config und der SSH-Agent", 8000)
+
+    def update_ssh_actions(self):
+        key = self.ssh_key()
+        self.a_ssh_key.setText(f"SSH-Schlüssel wählen… (aktuell: {os.path.basename(key)})" if key
+                               else "SSH-Schlüssel wählen… (aktuell: Standard von SSH)")
+        self.a_ssh_clear.setEnabled(bool(key))
+
+    def test_ssh(self):
+        """Anmeldung über den Remote des offenen Repos prüfen (origin, sonst der erste)."""
+        tab = self.tabs.currentWidget()
+        remotes = tab.git("remote").split() if isinstance(tab, RepoTab) else []
+        if not remotes:
+            return QMessageBox.information(self, "SSH-Verbindung testen",
+                                           "Bitte zuerst ein Repository mit Remote (z.B. origin) öffnen.")
+        tab.test_ssh("origin" if "origin" in remotes else remotes[0])
 
     def set_theme(self, name):
         """Design umschalten und alles neu zeichnen, was Farben fest in Inhalte geschrieben hat."""

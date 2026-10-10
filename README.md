@@ -30,7 +30,7 @@ für alles wird das `git`-Kommandozeilenprogramm aufgerufen.
 - **Konflikte lösen** bei Merge, Rebase, Cherry-Pick und Revert: Block für Block mit editierbarem Ergebnis,
   Abbrechen/Fortsetzen über ein Banner
 - **Zugangsdaten**: fragt Git nach Benutzer, Passwort/Token oder SSH-Passphrase, erscheint ein Dialog;
-  eigener SSH-Schlüssel pro Repo und SSH-Verbindungstest (Rechtsklick auf einen Remote)
+  eigener SSH-Schlüssel für die ganze GUI (Menü „Einstellungen“) und SSH-Verbindungstest
 - Seitenleiste mit Filter, Favoriten-Branches (wie „Starred“ in Fork), Branch-Ordnern (`feature/…`) und
   Ahead/Behind-Anzeige
 - Dunkles oder helles Design (oder wie das System), Terminal im Repo-Ordner öffnen
@@ -95,7 +95,7 @@ python3 git_gui.py         # ohne Installation direkt aus dem Ordner
 | Branch auschecken | Doppelklick in der Seitenleiste |
 | Branch-Aktionen | Rechtsklick auf Branch, Remote-Branch, Tag oder Stash |
 | Remotes verwalten, Tags anlegen | Rechtsklick auf „Remotes“, einen Remote oder „Tags“ |
-| SSH-Schlüssel wählen, Verbindung testen | Rechtsklick auf einen Remote |
+| SSH-Schlüssel wählen, Verbindung testen | Menü „Einstellungen“ (Test auch per Rechtsklick auf einen Remote) |
 | Datei stagen | Doppelklick, „Stagen“-Knopf oder Rechtsklick |
 | Hunk stagen | „Hunk stagen“ im Diff-Kopf |
 | Zeilen stagen | Zeilen im Diff anklicken (Umschalt+Klick für Bereiche), dann „n Zeilen stagen“ |

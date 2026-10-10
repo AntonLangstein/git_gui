@@ -11,7 +11,7 @@ from PySide6.QtCore import QFileSystemWatcher, QProcess, QProcessEnvironment, QS
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QKeySequence, QShortcut
 
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QFileDialog, QFrame, QHBoxLayout, QHeaderView,
+    QAbstractItemView, QApplication, QCheckBox, QFrame, QHBoxLayout, QHeaderView,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
     QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSplitter, QStackedWidget,
     QTabWidget, QTextBrowser, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
@@ -22,7 +22,7 @@ from .theme import COLORS, STATUS_COLORS
 from .core import (
     GIT_ENV, OPERATIONS, build_graph, file_diffs, friendly_error, git_out,
     graph_args, line_patch, load_stars, parse_refs, parse_ssh_remote, parse_status, repo_value,
-    save_stars, set_repo_value, split_hunks, ssh_command_for, ssh_key_from_command, ssh_test_result,
+    save_stars, set_repo_value, split_hunks, ssh_test_result,
     view_option, ws_args,
 )
 from .diff import diff_html, patch_html, status_icon
@@ -352,7 +352,7 @@ class RepoTab(QWidget):
     def act_async(self, *args, quiet=False):
         """Fetch/Pull/Push im Hintergrund: das Fenster bleibt bedienbar, danach wird aktualisiert.
 
-        quiet=True (automatischer Fetch): Fehler nur in der Statusleiste, kein Dialog.
+        quiet=True (automatischer Fetch): fragt nie nach Zugangsdaten, Fehler nur in der Statusleiste.
         """
         if self.proc:
             if quiet:
@@ -360,7 +360,10 @@ class RepoTab(QWidget):
             return QMessageBox.information(self, "Git", f"Es läuft noch „git {self.proc_label}“. Bitte kurz warten.")
         proc = QProcess(self)
         env = QProcessEnvironment()
-        for key, value in GIT_ENV.items():
+        # Im Hintergrund nie nach Passwort/Benutzer fragen: leeres GIT_ASKPASS und kein SSH-Askpass,
+        # dann bricht Git einfach ab statt alle paar Minuten einen Dialog zu öffnen
+        silent = {"GIT_ASKPASS": "", "SSH_ASKPASS_REQUIRE": "never"} if quiet else {}
+        for key, value in {**GIT_ENV, **silent}.items():
             env.insert(key, value)
         proc.setProcessEnvironment(env)
         proc.setWorkingDirectory(self.repo)
@@ -794,12 +797,7 @@ class RepoTab(QWidget):
             menu.addAction("Adresse kopieren",
                            lambda: QApplication.clipboard().setText(self.git("remote", "get-url", name).strip()))
             menu.addSeparator()
-            key = self.ssh_key()
             menu.addAction("SSH-Verbindung testen", lambda: self.test_ssh(name))
-            menu.addAction(f"SSH-Schlüssel für dieses Repo… ({os.path.basename(key)})" if key
-                           else "SSH-Schlüssel für dieses Repo…", self.choose_ssh_key)
-            if key:
-                menu.addAction("Eigenen SSH-Schlüssel entfernen (Standard nutzen)", self.remove_ssh_key)
             menu.addSeparator()
             menu.addAction("Entfernen…", lambda: self.remove_remote(name))
         elif node == "Tags":
@@ -811,26 +809,6 @@ class RepoTab(QWidget):
         menu.exec(self.sidebar.viewport().mapToGlobal(pos))
         return True
 
-    def ssh_key(self):
-        """Für dieses Repo gesetzter SSH-Schlüssel (core.sshCommand) oder None."""
-        return ssh_key_from_command(self.git("config", "--get", "core.sshCommand").strip())
-
-    def choose_ssh_key(self):
-        """Eigenen SSH-Schlüssel für dieses Repo setzen – gilt für alle Remotes dieses Repos."""
-        path, _ = QFileDialog.getOpenFileName(self, "Privaten SSH-Schlüssel wählen (nicht die .pub-Datei)",
-                                              self.ssh_key() or os.path.expanduser("~/.ssh"))
-        if not path:
-            return
-        path = path.removesuffix(".pub")  # aus Versehen den öffentlichen Schlüssel gewählt
-        if not os.path.isfile(path):
-            return QMessageBox.information(self, "SSH-Schlüssel", f"Zu „{path}.pub“ fehlt der private Schlüssel.")
-        self.git("config", "core.sshCommand", ssh_command_for(path), check=True)
-        self.show_status("config", f"SSH-Schlüssel für dieses Repo: {path}")
-
-    def remove_ssh_key(self):
-        self.git("config", "--unset", "core.sshCommand", check=True)
-        self.show_status("config", "Eigener SSH-Schlüssel entfernt – es gelten wieder ~/.ssh/config und der SSH-Agent")
-
     def test_ssh(self, remote):
         """Anmeldung mit genau dem SSH-Befehl prüfen, den Git für dieses Repo nimmt (läuft im Hintergrund)."""
         url = self.git("remote", "get-url", remote).strip()
@@ -840,7 +818,9 @@ class RepoTab(QWidget):
                                            "\n\nBei HTTPS fragt Git nach Benutzer und Token. Für die Anmeldung per "
                                            "Schlüssel die Adresse auf SSH umstellen (z.B. git@github.com:name/repo.git).")
         host, port = target
-        command = [*shlex.split(self.git("config", "--get", "core.sshCommand").strip() or "ssh"), "-T",
+        # gleicher Vorrang wie bei Git: GIT_SSH_COMMAND (Schlüssel aus den Einstellungen) vor core.sshCommand
+        base = GIT_ENV.get("GIT_SSH_COMMAND") or self.git("config", "--get", "core.sshCommand").strip() or "ssh"
+        command = [*shlex.split(base), "-T",
                    "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10", *(["-p", port] if port else []), host]
         self.show_status("ssh", f"Teste die Anmeldung bei {host}…")
 

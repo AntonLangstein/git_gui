@@ -5,7 +5,7 @@ from tests import helpers  # noqa: F401  (setzt die Testumgebung)
 from gitgui.core import (
     build_graph, file_diffs, friendly_error, graph_args, group_repos, line_patch, monthly_series, parse_blame,
     parse_conflicts, parse_file_log, parse_refs, parse_status, rebase_todo, relative_time, resolve_conflicts,
-    parse_ssh_remote, split_hunks, ssh_command_for, ssh_key_from_command, ssh_test_result,
+    parse_ssh_remote, split_hunks, ssh_command_for, ssh_test_result,
 )
 from gitgui.diff import code_html, diff_html, hunk_marks, word_marks
 
@@ -145,10 +145,8 @@ class SshTest(unittest.TestCase):
         self.assertIsNone(parse_ssh_remote("https://github.com/a/b.git"))
         self.assertIsNone(parse_ssh_remote("/srv/git/repo.git"))
 
-    def test_key_roundtrip(self):
-        cmd = ssh_command_for("/home/a b/.ssh/id_x")
-        self.assertEqual(ssh_key_from_command(cmd), "/home/a b/.ssh/id_x")
-        self.assertIsNone(ssh_key_from_command("ssh -v"))
+    def test_ssh_command_quotes_path(self):
+        self.assertEqual(ssh_command_for("/home/a b/.ssh/id_x"), "ssh -i '/home/a b/.ssh/id_x' -o IdentitiesOnly=yes")
 
     def test_result(self):
         self.assertTrue(ssh_test_result(1, "Hi anton! You've successfully authenticated, but GitHub does not provide shell access.")[0])
