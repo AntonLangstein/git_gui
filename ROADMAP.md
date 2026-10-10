@@ -1,0 +1,50 @@
+# Roadmap
+
+Geplante Verbesserungen, nach Nutzen sortiert. Empfohlene Reihenfolge: zuerst **Tests (13)**, weil sie alles
+Weitere absichern, danach **1–4**, die im Alltag am meisten auffallen.
+
+Aufwand: **S** = Stunden, **M** = ca. ein Tag, **L** = mehrere Tage.
+
+## Als Nächstes
+
+- [ ] **1. Automatisch aktualisieren** (S) – `.git`-Ordner beobachten (`QFileSystemWatcher`) und neu laden, wenn im
+  Terminal committet oder ein Branch gewechselt wird. Bisher nur per F5 oder Tab-Wechsel.
+- [ ] **2. Ahead/Behind an Pull und Push** (S) – Zähler an den Toolbar-Knöpfen, wie viele Commits zu pullen bzw.
+  zu pushen sind; optional automatischer Fetch alle paar Minuten.
+- [ ] **3. Commit-Menü im Verlauf erweitern** (M) – „Branch hier erstellen“, „Tag hier erstellen“, „Commit
+  auschecken“, „Branch auf diesen Commit zurücksetzen“ (soft/mixed/hard, hard mit Warnung).
+- [ ] **4. Freundlichere Fehlermeldungen** (S) – bei Konflikten kein Git-Dialog vor dem Banner; häufige Fehler
+  übersetzt und mit Lösungshinweis (z. B. „Push abgelehnt – erst pullen“).
+- [ ] **5. Verlauf nachladen** (M) – beim Scrollen weitere Commits laden statt fest bei 1000 aufzuhören; damit findet
+  auch der Verlaufsfilter ältere Tags.
+
+## Diff-Ansicht
+
+- [ ] **6. Wort-Diff** (M) – geänderte Wörter innerhalb einer Zeile hervorheben.
+- [ ] **7. Syntax-Hervorhebung und Whitespace** (M) – Hervorhebung nach Dateityp; Schalter „Leerzeichen-Änderungen
+  ignorieren“.
+- [ ] **8. Nebeneinander-Ansicht** (M) – alt | neu als Alternative zur Zeilenansicht.
+
+## Fehlende Git-Funktionen
+
+- [ ] **9. Pull-/Push-Optionen** (S) – Pull mit Rebase statt Merge; Push mit `--force-with-lease`, z. B. nach Amend.
+- [ ] **10. Datei-Historie und Blame** (M) – Rechtsklick auf eine Datei zeigt ihren Verlauf und wer welche Zeile
+  geändert hat.
+- [ ] **11. Tags anlegen, Remotes verwalten** (S) – Tags erstellen; Remotes hinzufügen, umbenennen, entfernen.
+- [ ] **12. Interaktiver Rebase** (L) – Commits zusammenfassen, umsortieren, umbenennen.
+
+## Stabilität und Pflege
+
+- [ ] **13. Echte Tests** (M) – die bisherigen Testskripte als `tests/`-Sammlung mit pytest und echten Test-Repos;
+  GitHub Action, die sie bei jedem Push ausführt (offscreen, `QT_QPA_PLATFORM=offscreen`).
+- [ ] **14. Aufteilen in Module** (M) – `git_gui.py` (> 2400 Zeilen) in Graph, Diff, Repo-Tab, Verwaltung und
+  Dialoge aufteilen.
+- [ ] **15. Langsame Aktionen im Hintergrund** (M) – Statistik, Dateibaum und Status bei großen Repos asynchron,
+  damit das Fenster nie hängt.
+
+## Komfort
+
+- [ ] **16. Hell/Dunkel umschaltbar** (S) – oder Systemfarben übernehmen.
+- [ ] **17. HTTPS-Zugangsdaten** (M) – Passwort-/Token-Dialog statt Abbruch bei Passwortabfragen.
+- [ ] **18. Installation** (S) – Skript oder `pyproject.toml`, das GUI und Menü-Starter mit einem Befehl
+  installiert; optional AUR-Paket.
