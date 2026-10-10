@@ -916,6 +916,8 @@ class RepoTab(QWidget):
         for col, width in ((1, 180), (2, 80), (3, 130)):
             self.log.setColumnWidth(col, width)
         self.log.currentItemChanged.connect(lambda cur, _prev: self.show_commit(cur))
+        self.log.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.log.customContextMenuRequested.connect(self.log_menu)
 
         self.commit_info = QTextBrowser(openLinks=False)
         self.commit_info.anchorClicked.connect(self.on_link)
@@ -1482,6 +1484,35 @@ class RepoTab(QWidget):
         if again:
             self.log.setCurrentItem(again)
         self.apply_log_filter()
+
+    def log_menu(self, pos):
+        """Rechtsklick auf einen Commit im Verlauf."""
+        item = self.log.itemAt(pos)
+        h = item and item.data(0, HASH_ROLE)
+        if not h:
+            return
+        self.log.setCurrentItem(item)
+        menu = QMenu(self)
+        pick = menu.addAction(f"Cherry-Pick auf „{self.branch}“…", lambda: self.cherry_pick(h, item.text(0)))
+        self.git("merge-base", "--is-ancestor", h, "HEAD")
+        if self.last_rc == 0:  # schon enthalten: Git würde mit einem leeren Cherry-Pick hängen bleiben
+            pick.setText("Cherry-Pick (schon im aktuellen Branch)")
+            pick.setEnabled(False)
+        elif self.op:
+            pick.setText(f"Cherry-Pick (erst {OPERATIONS[self.op]} abschließen)")
+            pick.setEnabled(False)
+        menu.addSeparator()
+        menu.addAction("Commit-Hash kopieren", lambda: QApplication.clipboard().setText(h))
+        menu.exec(self.log.viewport().mapToGlobal(pos))
+
+    def cherry_pick(self, h, subject):
+        """Übernimmt einen Commit in den aktuellen Branch; Konflikte landen im üblichen Konflikt-Banner."""
+        merge = len(self.git("rev-list", "--parents", "-n", "1", h).split()) > 2
+        text = f"Commit {h[:7]} „{subject}“ auf „{self.branch}“ übernehmen?"
+        if merge:
+            text += "\n\nDas ist ein Merge-Commit: übernommen werden seine Änderungen gegenüber dem ersten Parent."
+        if self.confirm("Cherry-Pick", text):
+            self.act("cherry-pick", *(["-m", "1"] if merge else []), h)
 
     def all_commits_args(self):
         """Refs für „Alle Commits“ inkl. Graph-Filter; füllt nebenbei die Hinweisleiste über dem Verlauf."""

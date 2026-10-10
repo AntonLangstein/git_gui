@@ -11,6 +11,7 @@ die für alles das `git`-Kommandozeilenprogramm aufruft.
 - **Verlauf** mit gezeichnetem Commit-Graph, farbigen Branch-/Tag-Labels und Autor-Avataren (Initialen);
   Suchfeld filtert nach Tag, Branch, Nachricht, Autor oder Hash
 - **Graph-Filter**: „Alle Commits“ auf ausgewählte Branches beschränken oder einzelne Branches ausblenden
+- **Cherry-Pick** per Rechtsklick im Verlauf, auch von Merge-Commits
 - **Commit-Details**: Autor, Committer, Parents, Dateiliste und Diff; bei Merges umschaltbar zwischen den Parents;
   Dateibaum mit allen Dateien zum Stand des Commits
 - **Lokale Änderungen**: Dateien, einzelne Hunks oder einzelne Zeilen stagen/unstagen, Änderungen verwerfen,
@@ -65,6 +66,7 @@ python3 git_gui.py ~/repo1 ~/repo2 # bestimmte Repositories öffnen
 | Datei stagen | Doppelklick, „Stagen“-Knopf oder Rechtsklick |
 | Hunk stagen | „Hunk stagen“ im Diff-Kopf |
 | Zeilen stagen | Zeilen im Diff anklicken (Umschalt+Klick für Bereiche), dann „n Zeilen stagen“ |
+| Cherry-Pick, Hash kopieren | Rechtsklick auf einen Commit im Verlauf |
 | Konflikt lösen | Doppelklick auf die Datei unter „Konflikte“ |
 
 ## Selbsttest
