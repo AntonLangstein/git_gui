@@ -11,7 +11,8 @@ die für alles das `git`-Kommandozeilenprogramm aufruft.
 - **Lokale Änderungen**: Dateien, einzelne Hunks oder einzelne Zeilen stagen/unstagen, Änderungen verwerfen,
   Commit mit Betreff, Beschreibung und Amend
 - **Branches**: wechseln, anlegen, umbenennen, löschen, mergen, rebasen – per Doppelklick oder Rechtsklick in der Seitenleiste
-- **Remotes**: Fetch, Pull, Push (setzt beim ersten Push den Upstream), Remote-Branches löschen
+- **Remotes**: Fetch, Pull, Push im Hintergrund (das Fenster bleibt bedienbar), Upstream beim ersten Push,
+  Remote-Branches löschen
 - **Stashes**: anlegen, anwenden, poppen, löschen, Inhalt ansehen
 - **Konflikte lösen** bei Merge, Rebase, Cherry-Pick und Revert: Block für Block mit editierbarem Ergebnis,
   Abbrechen/Fortsetzen über ein Banner
@@ -68,7 +69,6 @@ python3 git_gui.py --selftest
 
 ## Bekannte Grenzen
 
-- Push, Pull und Fetch blockieren das Fenster, bis Git fertig ist.
 - Passwortabfragen (z. B. HTTPS ohne gespeicherte Zugangsdaten) werden nicht unterstützt – Git bricht dann mit einer
   Fehlermeldung ab. SSH-Agent oder ein Credential-Helper funktionieren.
 - Sehr große Diffs werden langsam dargestellt.

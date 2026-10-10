@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 
-from PySide6.QtCore import QPointF, QRectF, QSettings, Qt, QUrl, Signal
+from PySide6.QtCore import QPointF, QProcess, QProcessEnvironment, QRectF, QSettings, Qt, QUrl, Signal
 from PySide6.QtGui import (
     QAction, QColor, QDesktopServices, QFont, QIcon, QPixmap, QKeySequence, QPainter, QPainterPath, QPalette,
     QPen, QShortcut,
@@ -15,7 +15,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QDialog, QFileDialog, QFrame, QGroupBox, QHBoxLayout, QHeaderView,
     QAbstractItemView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
-    QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QStyle,
+    QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QStyle,
     QStyledItemDelegate, QTabWidget, QTextBrowser, QToolBar, QToolButton, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
@@ -713,6 +713,8 @@ class RepoTab(QWidget):
         self.view = ("changes",)
         self.collapsed = {"Tags"}  # eingeklappte Abschnitte/Ordner der Seitenleiste
         self.op = None  # laufender merge/rebase/... oder None
+        self.proc = None  # laufender Hintergrund-Befehl (fetch/pull/push)
+        self.proc_label = ""
         self.n_conflicts = 0
         mono = QFont("monospace")
         mono.setStyleHint(QFont.Monospace)
@@ -910,7 +912,7 @@ class RepoTab(QWidget):
     # --- git ---------------------------------------------------------------
 
     def git(self, *args, check=False, input=None):
-        # ponytail: blockiert die UI bei langen Push/Pull; QProcess falls das stört
+        """Schnelle, lokale git-Befehle synchron; Netzwerk-Befehle laufen über act_async."""
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             stdin = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
@@ -922,10 +924,43 @@ class RepoTab(QWidget):
             if r.returncode:
                 QMessageBox.warning(self, "git " + args[0], r.stderr or r.stdout)
             else:
-                last = (r.stderr or r.stdout).strip().splitlines()
-                if isinstance(self.window(), QMainWindow):
-                    self.window().statusBar().showMessage(f"git {args[0]}: " + (last[-1] if last else "ok"), 8000)
+                self.show_status(args[0], r.stderr or r.stdout)
         return r.stdout
+
+    def show_status(self, cmd, output):
+        last = output.strip().splitlines()
+        if isinstance(self.window(), QMainWindow):
+            self.window().statusBar().showMessage(f"git {cmd}: " + (last[-1] if last else "ok"), 8000)
+
+    def act_async(self, *args):
+        """Fetch/Pull/Push im Hintergrund: das Fenster bleibt bedienbar, danach wird aktualisiert."""
+        if self.proc:
+            return QMessageBox.information(self, "Git", f"Es läuft noch „git {self.proc_label}“. Bitte kurz warten.")
+        proc = QProcess(self)
+        env = QProcessEnvironment()
+        for key, value in GIT_ENV.items():
+            env.insert(key, value)
+        proc.setProcessEnvironment(env)
+        proc.setWorkingDirectory(self.repo)
+        proc.finished.connect(lambda code, status: self.async_done(proc, args, code, status))
+        proc.errorOccurred.connect(lambda err: err == QProcess.FailedToStart and self.async_done(proc, args, -1, None))
+        self.proc, self.proc_label = proc, args[0]
+        self.changed.emit()
+        proc.start("git", list(args))
+        proc.closeWriteChannel()  # keine Eingaben: Git soll nie auf stdin warten
+
+    def async_done(self, proc, args, code, status):
+        if self.proc is not proc:  # schon behandelt (z.B. Startfehler + finished)
+            return
+        out = bytes(proc.readAllStandardOutput()).decode(errors="replace")
+        err = bytes(proc.readAllStandardError()).decode(errors="replace")
+        self.proc = None
+        proc.deleteLater()
+        if code != 0 or status == QProcess.CrashExit:
+            QMessageBox.warning(self, "git " + args[0], err or out or "Der Befehl wurde abgebrochen.")
+        else:
+            self.show_status(args[0], err or out)
+        self.refresh()
 
     def act(self, *args):
         self.git(*args, check=True)
@@ -935,11 +970,11 @@ class RepoTab(QWidget):
         """Pusht `branch` (Standard: aktueller Branch)."""
         upstream = self.git("rev-parse", "--abbrev-ref", f"{branch or ''}@{{u}}").strip()
         if upstream and not branch:
-            self.act("push")
+            self.act_async("push")
         elif upstream:  # ponytail: nimmt an, dass Remote-Namen keinen "/" enthalten
-            self.act("push", upstream.split("/", 1)[0], branch)
+            self.act_async("push", upstream.split("/", 1)[0], branch)
         else:  # erster Push eines Branches: Upstream setzen
-            self.act("push", "-u", "origin", branch or "HEAD")
+            self.act_async("push", "-u", "origin", branch or "HEAD")
 
     def new_branch(self, start=None):
         name, ok = QInputDialog.getText(self, "Neuer Branch", f"Name (wird von {start or 'HEAD'} erstellt):")
@@ -968,7 +1003,7 @@ class RepoTab(QWidget):
         remote, branch = name.split("/", 1)
         if self.confirm("Remote-Branch löschen", f"„{branch}“ auf „{remote}“ löschen?\n"
                                                  "Das betrifft alle, die dieses Remote nutzen."):
-            self.act("push", remote, "--delete", branch)
+            self.act_async("push", remote, "--delete", branch)
 
     def delete_tag(self, name):
         if self.confirm("Tag löschen", f"Tag „{name}“ lokal löschen?"):
@@ -1226,7 +1261,7 @@ class RepoTab(QWidget):
                 menu.addSeparator()
                 add("Auf Remote löschen…", lambda: self.delete_remote_branch(name))
             elif kind == "tag":
-                add("Pushen", lambda: self.act("push", "origin", f"refs/tags/{name}"))
+                add("Pushen", lambda: self.act_async("push", "origin", f"refs/tags/{name}"))
                 menu.addSeparator()
                 add("Löschen…", lambda: self.delete_tag(name))
         menu.exec(self.sidebar.viewport().mapToGlobal(pos))
@@ -1508,8 +1543,8 @@ class MainWindow(QMainWindow):
             return a
 
         a_open = action("Öffnen", "folder-open", self.open_dialog, "Ctrl+O", on_tab=False)
-        a_fetch = action("Fetch", "view-refresh", lambda t: t.act("fetch", "--all", "--prune"))
-        a_pull = action("Pull", "vcs-pull", lambda t: t.act("pull"))
+        a_fetch = action("Fetch", "view-refresh", lambda t: t.act_async("fetch", "--all", "--prune"))
+        a_pull = action("Pull", "vcs-pull", lambda t: t.act_async("pull"))
         a_push = action("Push", "vcs-push", lambda t: t.push())
         a_stash = action("Stash", "vcs-stash", lambda t: t.stash())
         a_pop = action("Stash Pop", "vcs-stash-pop", lambda t: t.act("stash", "pop"))
@@ -1543,6 +1578,11 @@ class MainWindow(QMainWindow):
         spacer = lambda: QWidget(sizePolicy=QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred))
         tb.addWidget(spacer())
         self.repo_info = QLabel(objectName="repoInfo", alignment=Qt.AlignCenter)
+        self.busy = QProgressBar(minimum=0, maximum=0, maximumWidth=140, maximumHeight=12, textVisible=False)
+        self.busy_label = QLabel()
+        self.statusBar().addPermanentWidget(self.busy_label)
+        self.statusBar().addPermanentWidget(self.busy)
+        self.busy.hide()
         tb.addWidget(self.repo_info)
         tb.addWidget(spacer())
         tb.addAction(a_branch)
@@ -1602,9 +1642,29 @@ class MainWindow(QMainWindow):
         if not open_terminal(tab.repo):
             QMessageBox.information(self, "Terminal", "Kein Terminal gefunden. Setze die Variable $TERMINAL.")
 
+    def stop_running(self, tabs):
+        """Fragt nach, wenn in `tabs` noch Push/Pull laufen, und bricht sie ggf. ab. False = nicht schließen."""
+        running = [t for t in tabs if t.proc]
+        if not running:
+            return True
+        names = ", ".join(f"git {t.proc_label} ({t.name})" for t in running)
+        if not self.ask("Läuft noch", f"Es läuft noch: {names}.\nTrotzdem schließen und abbrechen?"):
+            return False
+        for t in running:
+            t.proc.finished.disconnect()
+            t.proc.kill()
+            t.proc.waitForFinished(2000)
+            t.proc = None
+        return True
+
+    def ask(self, title, text):
+        return QMessageBox.question(self, title, text) == QMessageBox.Yes
+
     def close_tab(self, i):
         if i >= 0:
             tab = self.tabs.widget(i)
+            if not self.stop_running([tab]):
+                return
             self.tabs.removeTab(i)
             tab.deleteLater()
             self.update_page()
@@ -1622,8 +1682,10 @@ class MainWindow(QMainWindow):
     def update_titles(self, tab):
         i = self.tabs.indexOf(tab)
         if i >= 0:
-            self.tabs.setTabText(i, tab.name + ("  ⚠" if tab.op else ""))
+            self.tabs.setTabText(i, tab.name + ("  ⚠" if tab.op else "") + ("  ⟳" if tab.proc else ""))
         if tab is self.tabs.currentWidget():
+            self.busy.setVisible(bool(tab.proc))
+            self.busy_label.setText(f"git {tab.proc_label} läuft…" if tab.proc else "")
             self.setWindowTitle(f"{tab.name} — Git GUI")
             self.repo_info.setText(f"<b style='font-size:11pt'>{html.escape(tab.name)}</b><br>"
                                    f"<span style='color:{COLORS['dim']}'>⑂ {html.escape(tab.branch)}</span>")
@@ -1636,8 +1698,12 @@ class MainWindow(QMainWindow):
         if not has_tabs:
             self.setWindowTitle("Git GUI")
             self.repo_info.clear()
+            self.busy.hide()
+            self.busy_label.clear()
 
     def closeEvent(self, event):
+        if not self.stop_running([self.tabs.widget(i) for i in range(self.tabs.count())]):
+            return event.ignore()
         self.settings.setValue("repos", [self.tabs.widget(i).repo for i in range(self.tabs.count())])
         self.settings.setValue("current", self.tabs.currentIndex())
         super().closeEvent(event)
