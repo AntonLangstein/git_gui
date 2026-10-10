@@ -1493,26 +1493,39 @@ class RepoTab(QWidget):
             return
         self.log.setCurrentItem(item)
         menu = QMenu(self)
-        pick = menu.addAction(f"Cherry-Pick auf „{self.branch}“…", lambda: self.cherry_pick(h, item.text(0)))
+        pick = menu.addAction(f"Cherry-Pick auf „{self.branch}“…", lambda: self.apply_commit("cherry-pick", h, item.text(0)))
+        revert = menu.addAction("Commit rückgängig machen (Revert)…", lambda: self.apply_commit("revert", h, item.text(0)))
         self.git("merge-base", "--is-ancestor", h, "HEAD")
-        if self.last_rc == 0:  # schon enthalten: Git würde mit einem leeren Cherry-Pick hängen bleiben
+        contained = self.last_rc == 0
+        if contained:  # schon enthalten: Git würde mit einem leeren Cherry-Pick hängen bleiben
             pick.setText("Cherry-Pick (schon im aktuellen Branch)")
             pick.setEnabled(False)
-        elif self.op:
-            pick.setText(f"Cherry-Pick (erst {OPERATIONS[self.op]} abschließen)")
-            pick.setEnabled(False)
+        else:  # Revert nur für Commits, die im aktuellen Branch stecken
+            revert.setText("Revert (nicht im aktuellen Branch)")
+            revert.setEnabled(False)
+        if self.op:
+            for a, name in ((pick, "Cherry-Pick"), (revert, "Revert")):
+                a.setText(f"{name} (erst {OPERATIONS[self.op]} abschließen)")
+                a.setEnabled(False)
         menu.addSeparator()
         menu.addAction("Commit-Hash kopieren", lambda: QApplication.clipboard().setText(h))
         menu.exec(self.log.viewport().mapToGlobal(pos))
 
-    def cherry_pick(self, h, subject):
-        """Übernimmt einen Commit in den aktuellen Branch; Konflikte landen im üblichen Konflikt-Banner."""
+    def apply_commit(self, cmd, h, subject):
+        """Cherry-Pick (übernehmen) oder Revert (per neuem Commit rückgängig machen) im aktuellen Branch.
+
+        Konflikte landen im üblichen Konflikt-Banner mit Fortsetzen/Abbrechen.
+        """
         merge = len(self.git("rev-list", "--parents", "-n", "1", h).split()) > 2
-        text = f"Commit {h[:7]} „{subject}“ auf „{self.branch}“ übernehmen?"
+        if cmd == "cherry-pick":
+            title, text = "Cherry-Pick", f"Commit {h[:7]} „{subject}“ auf „{self.branch}“ übernehmen?"
+        else:
+            title, text = "Revert", (f"Commit {h[:7]} „{subject}“ rückgängig machen?\n\n"
+                                     f"Dafür wird auf „{self.branch}“ ein neuer Commit erstellt, der die Änderungen umkehrt.")
         if merge:
-            text += "\n\nDas ist ein Merge-Commit: übernommen werden seine Änderungen gegenüber dem ersten Parent."
-        if self.confirm("Cherry-Pick", text):
-            self.act("cherry-pick", *(["-m", "1"] if merge else []), h)
+            text += "\n\nDas ist ein Merge-Commit: maßgeblich sind seine Änderungen gegenüber dem ersten Parent."
+        if self.confirm(title, text):
+            self.act(cmd, *(["-m", "1"] if merge else []), h)
 
     def all_commits_args(self):
         """Refs für „Alle Commits“ inkl. Graph-Filter; füllt nebenbei die Hinweisleiste über dem Verlauf."""
