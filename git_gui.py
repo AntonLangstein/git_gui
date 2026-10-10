@@ -69,6 +69,8 @@ QFrame#banner { background: rgba(229, 83, 75, 45); border-radius: 6px; }
 
 def setup_app(app):
     app.setStyle("Fusion")
+    app.setWindowIcon(QIcon(os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.svg")))
+    app.setDesktopFileName("git_gui")  # ordnet das Fenster unter Wayland dem Starter git_gui.desktop zu
     pal = QPalette()
     for role, key in ((QPalette.Window, "window"), (QPalette.WindowText, "text"), (QPalette.Base, "base"),
                       (QPalette.AlternateBase, "alt"), (QPalette.Text, "text"), (QPalette.Button, "button"),
