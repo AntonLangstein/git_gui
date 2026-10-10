@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Git GUI
+GenericName=Git client
+GenericName[de]=Git-Oberfläche
+Comment=Manage Git repositories, in the style of Fork
+Comment[de]=Git-Repositories verwalten, im Stil von Fork
+Exec=gitgui %F
+Icon=gitgui
+Terminal=false
+Categories=Development;RevisionControl;
+Keywords=git;fork;commit;branch;
+StartupWMClass=git_gui

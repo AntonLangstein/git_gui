@@ -46,10 +46,10 @@ Aufwand: **S** = Stunden, **M** = ca. ein Tag, **L** = mehrere Tage.
 - [x] **16. Hell/Dunkel umschaltbar** (S) – oder Systemfarben übernehmen.
 - [x] **17. HTTPS-Zugangsdaten** (M) – Passwort-/Token-Dialog statt Abbruch bei Passwortabfragen.
 - [x] **18. Installation** (S) – Skript oder `pyproject.toml`, das GUI und Menü-Starter mit einem Befehl
-  installiert; optional AUR-Paket (noch offen).
+  installiert; AUR-Paket `gitgui-git` in `packaging/aur`.
 
 ## Ideen für später
 
-- [ ] AUR-Paket (PKGBUILD)
+- [x] AUR-Paket (PKGBUILD in `packaging/aur`, Veröffentlichung noch offen)
 - [ ] Submodule und Worktrees anzeigen
 - [ ] Suche im Diff

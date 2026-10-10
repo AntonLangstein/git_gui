@@ -65,6 +65,12 @@ Entfernen mit `./install.sh --uninstall`.
 pipx install '.[syntax]'
 ```
 
+**Als Arch-Paket** (AUR-Paket `gitgui-git`, siehe [packaging/aur](packaging/aur/README.md)):
+
+```bash
+cd packaging/aur/gitgui-git && makepkg -si
+```
+
 Der Befehl heißt bewusst `gitgui` und nicht `git-gui` – so heißt schon das Tk-Programm, das Git selbst mitbringt.
 
 ## Starten
@@ -131,3 +137,7 @@ Auf GitHub laufen sie bei jedem Push (`.github/workflows/tests.yml`).
 - Interaktiver Rebase nur ohne Merge-Commits im gewählten Bereich.
 
 Geplante und erledigte Verbesserungen stehen in der [ROADMAP](ROADMAP.md).
+
+## Lizenz
+
+MIT – siehe [LICENSE](LICENSE).

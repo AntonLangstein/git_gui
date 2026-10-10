@@ -1,0 +1,21 @@
+pkgbase = gitgui-git
+	pkgdesc = Lightweight Git GUI in the style of Fork (Qt/PySide6)
+	pkgver = 0.2.0.r0.g0000000
+	pkgrel = 1
+	url = https://github.com/AntonLangstein/git_gui
+	arch = any
+	license = MIT
+	makedepends = python-build
+	makedepends = python-installer
+	makedepends = python-setuptools
+	makedepends = python-wheel
+	depends = git
+	depends = python
+	depends = pyside6
+	optdepends = python-pygments: syntax highlighting in diffs
+	provides = gitgui
+	conflicts = gitgui
+	source = gitgui::git+https://github.com/AntonLangstein/git_gui.git
+	sha256sums = SKIP
+
+pkgname = gitgui-git

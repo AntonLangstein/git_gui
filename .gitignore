@@ -4,3 +4,7 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+packaging/aur/*/src/
+packaging/aur/*/pkg/
+packaging/aur/*/gitgui/
+packaging/aur/*/*.pkg.tar.*
