@@ -156,8 +156,8 @@ def parse_status(out):
         if not entry:
             continue
         x, y, path = entry[0], entry[1], entry[3:]
-        if x in "RC":
-            i += 1  # rename/copy: next field is the original path
+        if x in "RC" or y in "RC":
+            i += 1  # rename/copy (Index oder Arbeitsverzeichnis): nächstes Feld ist der alte Pfad
         if x + y in CONFLICT_CODES:
             conflicts.append(path)
             continue
@@ -491,6 +491,12 @@ def monthly_series(rows, top=7):
     if any(other):
         result.append(("Andere", other))
     return months, result
+
+
+def folders_first(name):
+    """Sortierschlüssel für `feature/x`-Namen: auf jeder Ebene erst die Ordner, dann die Einträge ohne Ordner."""
+    *dirs, leaf = name.split("/")
+    return [(0, d) for d in dirs] + [(1, leaf)]
 
 
 def group_repos(known, folders, folder_of):

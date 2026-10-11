@@ -3,7 +3,7 @@ import unittest
 
 from tests import helpers  # noqa: F401  (setzt die Testumgebung)
 from gitgui.core import (
-    build_graph, file_diffs, friendly_error, graph_args, group_repos, line_patch, monthly_series, parse_blame,
+    build_graph, file_diffs, folders_first, friendly_error, graph_args, group_repos, line_patch, monthly_series, parse_blame,
     parse_conflicts, parse_file_log, parse_refs, parse_status, rebase_todo, relative_time, resolve_conflicts,
     parse_ssh_remote, split_hunks, ssh_command_for, ssh_test_result,
 )
@@ -12,9 +12,9 @@ from gitgui.diff import code_html, diff_html, hunk_marks, word_marks
 
 class StatusTest(unittest.TestCase):
     def test_parse_status(self):
-        out = " M a.txt\0M  b.txt\0MM c.txt\0?? d.txt\0R  new.txt\0old.txt\0UU e.txt\0AA f.txt\0"
+        out = " M a.txt\0M  b.txt\0MM c.txt\0?? d.txt\0R  new.txt\0old.txt\0 R c\0a\0UU e.txt\0AA f.txt\0"
         self.assertEqual(parse_status(out), (
-            [("a.txt", "M"), ("c.txt", "M"), ("d.txt", "?")],
+            [("a.txt", "M"), ("c.txt", "M"), ("d.txt", "?"), ("c", "R")],
             [("b.txt", "M"), ("c.txt", "M"), ("new.txt", "R")],
             ["e.txt", "f.txt"]))
 
@@ -128,6 +128,11 @@ class TextTest(unittest.TestCase):
         g = group_repos(["/x/zeta", "/x/Alpha", "/y/beta", "/y/gamma"], ["Arbeit"],
                         {"/y/beta": "Arbeit", "/y/gamma": "Gelöscht"})
         self.assertEqual(g, [("Arbeit", ["/y/beta"]), (None, ["/x/Alpha", "/y/gamma", "/x/zeta"])])
+
+    def test_folders_first(self):
+        names = ["main", "fix/b", "dev", "fix/a/x", "claude/1", "fix/a", "zz"]
+        self.assertEqual(sorted(names, key=folders_first),
+                         ["claude/1", "fix/a/x", "fix/a", "fix/b", "dev", "main", "zz"])
 
     def test_parse_blame_and_file_log(self):
         b = parse_blame("a" * 40 + " 1 1 1\nauthor Ann\nauthor-time 100\nsummary x\n\tcode 1\n"

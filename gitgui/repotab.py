@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 
 from .theme import COLORS, STATUS_COLORS
 from .core import (
-    GIT_ENV, OPERATIONS, build_graph, file_diffs, friendly_error, git_out,
+    GIT_ENV, OPERATIONS, build_graph, file_diffs, folders_first, friendly_error, git_out,
     graph_args, line_patch, load_stars, parse_refs, parse_ssh_remote, parse_status, repo_value,
     save_stars, set_repo_value, split_hunks, ssh_test_result,
     view_option, ws_args,
@@ -677,8 +677,10 @@ class RepoTab(QWidget):
         add(t, f"Änderungen ({n_changes})", ("changes",), "document-edit")
         all_item = add(t, "Alle Commits", ("log", "--all", "all"), "view-history")
 
-        heads = self.refs("refs/heads", "%(HEAD)\t%(refname:short)\t%(upstream:track,nobracket)")
-        remotes = [n for (n,) in self.refs("refs/remotes") if "/" in n and not n.endswith("/HEAD")]  # "origin" = origin/HEAD
+        heads = sorted(self.refs("refs/heads", "%(HEAD)\t%(refname:short)\t%(upstream:track,nobracket)"),
+                       key=lambda r: folders_first(r[1]))
+        remotes = sorted((n for (n,) in self.refs("refs/remotes") if "/" in n and not n.endswith("/HEAD")),
+                         key=folders_first)  # "origin" = origin/HEAD
         current = next((n for h, n, _ in heads if h == "*"), None)
         only, hidden = self.graph_filter()
         existing_refs = {f"refs/heads/{n}" for _, n, _ in heads} | {f"refs/remotes/{n}" for n in remotes}
@@ -720,7 +722,7 @@ class RepoTab(QWidget):
             mark(add_path(sec, name, ("log", name, "remote"), "vcs-branch", first_icon="folder-cloud"), "remote", name)
 
         sec = node(t, "Tags", "Tags")
-        for (name,) in self.refs("refs/tags"):
+        for (name,) in sorted(self.refs("refs/tags"), key=lambda r: folders_first(r[0])):
             add_path(sec, name, ("log", name, "tag"), "tag")
 
         sec = node(t, "Stashes", "Stashes")

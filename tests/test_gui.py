@@ -11,7 +11,7 @@ import time
 import unittest
 
 from tests.helpers import FakeMenu, GuiTestCase, commit, git, make_repo, write
-from PySide6.QtCore import QPoint, QSettings, QUrl, Qt
+from PySide6.QtCore import QSettings, QUrl, Qt
 
 from gitgui.core import GIT_ENV, split_hunks
 from gitgui.dialogs import ConflictDialog, FileHistoryDialog, RebaseDialog
@@ -146,7 +146,8 @@ class HistoryTest(GuiTestCase):
         dialog.save()
         self.tab.act(self.tab.op, "--continue")
         self.assertIsNone(self.tab.op)
-        self.assertEqual(open(os.path.join(self.repo, "t.txt")).read(), "a\nB-feature\nc\n")
+        with open(os.path.join(self.repo, "t.txt")) as f:
+            self.assertEqual(f.read(), "a\nB-feature\nc\n")
 
     def test_revert_only_for_commits_in_branch(self):
         self.assertFalse(self.menu_for("Neue Datei")["Revert (nicht im aktuellen Branch)"].isEnabled())
@@ -477,6 +478,7 @@ class AskpassTest(GuiTestCase):
 
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Auth, directory=web))
         threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         return f"http://127.0.0.1:{server.server_address[1]}/repo.git"
 
