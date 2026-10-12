@@ -12,7 +12,7 @@ from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QKeySequence, 
 
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QFrame, QHBoxLayout, QHeaderView,
-    QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
+    QInputDialog, QLabel, QLineEdit, QListWidget, QMainWindow,
     QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSplitter, QStackedWidget,
     QTabWidget, QTextBrowser, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
     QWidget,
@@ -28,7 +28,7 @@ from .core import (
 from .diff import diff_html, patch_html, status_icon
 from .widgets import (
     AuthorDelegate, Background, CommitDelegate, DiffView, EXTRA_ROLE, GRAPH_ROLE,
-    HASH_ROLE, HEAD_ROLE, NODE_ROLE, REFS_ROLE, initials, person_color,
+    HASH_ROLE, HEAD_ROLE, NODE_ROLE, REFS_ROLE, initials, path_tree, person_color,
 )
 from .dialogs import ConflictDialog, FileHistoryDialog, RebaseDialog
 
@@ -80,7 +80,8 @@ class RepoTab(QWidget):
         self.mono = mono
 
         def file_list():
-            w = QListWidget(objectName="files", selectionMode=QAbstractItemView.ExtendedSelection)
+            w = QTreeWidget(objectName="files", headerHidden=True, indentation=14,
+                            selectionMode=QAbstractItemView.ExtendedSelection)
             w.setContextMenuPolicy(Qt.CustomContextMenu)
             w.customContextMenuRequested.connect(lambda pos, w=w: self.file_menu(w, pos))
             return w
@@ -286,15 +287,16 @@ class RepoTab(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(main)
 
-        self.unstaged.currentTextChanged.connect(lambda p: self.show_diff(p, cached=False))
-        self.staged.currentTextChanged.connect(lambda p: self.show_diff(p, cached=True))
+        self.unstaged.currentItemChanged.connect(lambda it: self.show_diff(it and it.data(0, Qt.UserRole), False))
+        self.staged.currentItemChanged.connect(lambda it: self.show_diff(it and it.data(0, Qt.UserRole), True))
         # Auswahl gibt es immer nur in einer der beiden Listen
-        self.unstaged.itemPressed.connect(lambda _: self.staged.clearSelection())
-        self.staged.itemPressed.connect(lambda _: self.unstaged.clearSelection())
+        self.unstaged.itemPressed.connect(lambda *_: self.staged.clearSelection())
+        self.staged.itemPressed.connect(lambda *_: self.unstaged.clearSelection())
         self.conflicts.currentTextChanged.connect(lambda p: self.show_diff(p, cached=False))
         self.conflicts.itemDoubleClicked.connect(lambda it: self.resolve(it.text()))
-        self.unstaged.itemDoubleClicked.connect(lambda it: self.act("add", "--", it.text()))
-        self.staged.itemDoubleClicked.connect(lambda it: self.act("restore", "--staged", "--", it.text()))
+        # Doppelklick auf Ordner klappt nur auf/zu
+        self.unstaged.itemDoubleClicked.connect(lambda it: it.childCount() or self.stage(self.selected(it)))
+        self.staged.itemDoubleClicked.connect(lambda it: it.childCount() or self.unstage(self.selected(it)))
         # nur im sichtbaren Tab aktiv, sonst wäre das Kürzel mehrdeutig
         QShortcut(QKeySequence("Ctrl+Return"), self, self.commit, context=Qt.WidgetWithChildrenShortcut)
         QShortcut(QKeySequence("Ctrl+F"), self, context=Qt.WidgetWithChildrenShortcut,
@@ -514,7 +516,7 @@ class RepoTab(QWidget):
         self.refresh()
 
     def stash(self):
-        if not (self.unstaged.count() or self.staged.count()):
+        if not (self.unstaged.topLevelItemCount() or self.staged.topLevelItemCount()):
             return QMessageBox.information(self, "Stash", "Keine lokalen Änderungen.")
         msg, ok = QInputDialog.getText(self, "Stash", "Nachricht (optional):")
         if ok:
@@ -535,15 +537,16 @@ class RepoTab(QWidget):
         return [line.split("\x1f", 1) for line in out.splitlines()]
 
     def refresh(self):
-        unstaged, staged, conflicts = parse_status(self.git("status", "--porcelain=v1", "-z"))
+        unstaged, staged, conflicts = parse_status(self.git("status", "--porcelain=v1", "-z", "--untracked-files=all"))
         keep = self.diff_ctx and self.diff_ctx[:2]  # angezeigte Datei nach dem Refresh wieder auswählen
-        for widget, items in ((self.unstaged, unstaged), (self.staged, staged)):
+        self.unstaged_codes = dict(unstaged)
+        for widget, entries in ((self.unstaged, unstaged), (self.staged, staged)):
             widget.blockSignals(True)
             widget.clear()
-            for path, code in items:
-                it = QListWidgetItem(status_icon(code), path)
-                it.setData(Qt.UserRole, code)
-                widget.addItem(it)
+            codes = dict(entries)
+            for path, it in path_tree(widget, codes).items():
+                it.setIcon(0, status_icon(codes[path]))
+            widget.expandAll()
             widget.blockSignals(False)
         self.unstaged_label.setText(f"Nicht gestaged ({len(unstaged)})")
         self.staged_label.setText(f"Gestaged ({len(staged)})")
@@ -575,7 +578,8 @@ class RepoTab(QWidget):
         if keep:
             path, cached = keep
             widget = self.staged if cached else self.unstaged
-            found = widget.findItems(path, Qt.MatchExactly)
+            found = [it for it in widget.findItems("*", Qt.MatchWildcard | Qt.MatchRecursive)
+                     if it.data(0, Qt.UserRole) == path]
             if found:
                 widget.setCurrentItem(found[0])
         self.branch = self.git("branch", "--show-current").strip() or "(detached)"
@@ -1243,10 +1247,7 @@ class RepoTab(QWidget):
         self.tree_content.clear()
 
         def load():
-            paths = [p for p in git_out(self.repo, "ls-tree", "-r", "--name-only", "-z", h).split("\0") if p]
-            # Ordner vor Dateien, jeweils alphabetisch – wie im Dateimanager
-            return sorted(paths, key=lambda p: [(0, d.lower()) for d in p.split("/")[:-1]]
-                          + [(1, p.rsplit("/", 1)[-1].lower())])
+            return [p for p in git_out(self.repo, "ls-tree", "-r", "--name-only", "-z", h).split("\0") if p]
 
         Background(self, load, lambda paths: self.build_tree(h, paths or []))
 
@@ -1257,22 +1258,10 @@ class RepoTab(QWidget):
         t = self.tree_files
         t.blockSignals(True)
         t.clear()
-        folders, first_changed = {"": t.invisibleRootItem()}, None
+        first_changed = None
         bold = QFont(t.font())
         bold.setBold(True)
-
-        def folder(path):
-            if path not in folders:
-                parent, _, name = path.rpartition("/")
-                it = QTreeWidgetItem(folder(parent), [name])
-                it.setIcon(0, QIcon.fromTheme("folder"))
-                folders[path] = it
-            return folders[path]
-
-        for path in paths:
-            parent, _, name = path.rpartition("/")
-            it = QTreeWidgetItem(folder(parent), [name])
-            it.setData(0, Qt.UserRole, path)
+        for path, it in path_tree(t, paths).items():
             it.setIcon(0, QIcon.fromTheme("text-x-generic"))
             status = self.detail_status.get(path)
             if status:  # in diesem Commit geändert: hervorheben und Ordner aufklappen
@@ -1353,8 +1342,16 @@ class RepoTab(QWidget):
         if self.view[0] == "stash":
             self.render_view()
 
-    def selected(self, widget):
-        return [it.text() for it in widget.selectedItems()]
+    def selected(self, widget_or_item):
+        """Pfade der ausgewählten Dateien; ein Ordner zählt mit allen Dateien darunter."""
+        todo = (widget_or_item.selectedItems() if isinstance(widget_or_item, QTreeWidget) else [widget_or_item])
+        paths = []
+        while todo:
+            it = todo.pop()
+            todo += [it.child(i) for i in range(it.childCount())]
+            if it.data(0, Qt.UserRole):
+                paths.append(it.data(0, Qt.UserRole))
+        return sorted(set(paths))
 
     def stage(self, paths):
         self.act("add", "-A", "--", *(paths or ["."]))
@@ -1368,9 +1365,7 @@ class RepoTab(QWidget):
                 "Änderungen verwerfen", f"Änderungen an {len(paths)} Datei(en) unwiderruflich verwerfen?\n\n"
                                         + "\n".join(paths[:10]) + ("\n…" if len(paths) > 10 else "")):
             return
-        codes = {self.unstaged.item(i).text(): self.unstaged.item(i).data(Qt.UserRole)
-                 for i in range(self.unstaged.count())}
-        untracked = [p for p in paths if codes.get(p) == "?"]
+        untracked = [p for p in paths if self.unstaged_codes.get(p) == "?"]
         tracked = [p for p in paths if p not in untracked]
         if tracked:
             self.git("restore", "--", *tracked, check=True)
@@ -1392,8 +1387,17 @@ class RepoTab(QWidget):
         else:
             menu.addAction("Unstagen", lambda: self.unstage(paths))
         menu.addSeparator()
-        full = os.path.join(self.repo, item.text())
-        menu.addAction("Historie und Blame…", lambda: FileHistoryDialog(self, item.text()).show())
+        path = item.data(0, Qt.UserRole)
+        if not path:  # Ordner
+            parts, node = [], item
+            while node:
+                parts.insert(0, node.text(0))
+                node = node.parent()
+            full = os.path.join(self.repo, *parts)
+            menu.addAction("Ordner öffnen", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(full)))
+            return menu.exec(widget.viewport().mapToGlobal(pos))
+        full = os.path.join(self.repo, path)
+        menu.addAction("Historie und Blame…", lambda: FileHistoryDialog(self, path).show())
         menu.addAction("Im Editor öffnen", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(full)))
         menu.addAction("Ordner öffnen",
                        lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(full))))
@@ -1483,7 +1487,7 @@ class RepoTab(QWidget):
         if not subject:
             return QMessageBox.information(self, "Commit", "Commit-Betreff fehlt.")
         amend = self.amend.isChecked()
-        if self.staged.count() == 0 and not amend and self.op != "merge":
+        if not self.staged.topLevelItemCount() and not amend and self.op != "merge":
             return QMessageBox.information(self, "Commit", "Nichts gestaged.")
         self.git("commit", *(["--amend"] if amend else []), "-m", msg, check=True)
         if self.last_rc == 0:

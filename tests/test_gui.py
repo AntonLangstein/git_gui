@@ -75,6 +75,17 @@ class StagingTest(GuiTestCase):
         self.tab.apply_lines()
         self.assertEqual(self.index("nonl.txt"), "x\ny\nY")
 
+    def test_files_as_tree_stage_folder(self):
+        os.makedirs(os.path.join(self.repo, "app/pages"))
+        write(self.repo, "app/pages/a.txt", "a\n")
+        write(self.repo, "app/b.txt", "b\n")
+        write(self.repo, "f.txt", "anders\n")
+        self.tab.refresh()
+        top = [self.tab.unstaged.topLevelItem(i).text(0) for i in range(self.tab.unstaged.topLevelItemCount())]
+        self.assertEqual(top, ["app", "f.txt"])  # Ordner zuerst
+        self.tab.stage(self.tab.selected(item_named(self.tab.unstaged, "app")))
+        self.assertEqual(git(self.repo, "diff", "--cached", "--name-only").split(), ["app/b.txt", "app/pages/a.txt"])
+
     def test_commit_amend_and_discard(self):
         write(self.repo, "neu.txt", "n\n")
         write(self.repo, "f.txt", "anders\n")

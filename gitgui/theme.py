@@ -76,7 +76,7 @@ QMenuBar::item:selected { background: $hover; }
 QFrame#listHeader, QFrame#diffHeader { background: $panel; border-bottom: 1px solid $border; }
 QFrame#listHeader QLabel, QFrame#diffHeader QLabel { font-weight: bold; }
 QFrame#listHeader QPushButton, QFrame#diffHeader QPushButton { padding: 2px 10px; }
-QListWidget#files::item { padding: 2px 4px; }
+QTreeWidget#files::item { padding: 2px 4px; }
 QWidget#commitBox { background: $sidebar; }
 QLineEdit#subject, QPlainTextEdit#body { background: $input; border: 1px solid $button; border-radius: 4px; padding: 4px; }
 QPushButton#commitBtn { background: $commit_btn; color: white; border: none; border-radius: 4px; padding: 6px 16px; font-weight: bold; }

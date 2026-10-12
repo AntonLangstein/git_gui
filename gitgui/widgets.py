@@ -11,11 +11,11 @@ from PySide6.QtGui import QColor, QCursor, QFont, QIcon, QPainter, QPainterPath,
 
 from PySide6.QtWidgets import (
     QInputDialog, QLineEdit, QStyle, QStyledItemDelegate, QTextBrowser, QToolTip,
-    QTreeWidget, QWidget,
+    QTreeWidget, QTreeWidgetItem, QWidget,
 )
 
 from .theme import CHART_COLORS, COLORS, LANE_COLORS, LANE_W, OTHER_COLOR
-from .core import GIT_ENV, MONTHS
+from .core import GIT_ENV, MONTHS, folders_first
 
 
 class Background(QObject):
@@ -358,3 +358,22 @@ class RepoTree(QTreeWidget):
     def dropEvent(self, event):
         super().dropEvent(event)
         self.dropped.emit()
+
+
+def path_tree(tree, paths):
+    """Pfade als Ordnerbaum in `tree` einhängen (Ordner zuerst) -> {pfad: element}; Pfad steht in Qt.UserRole."""
+    folders, items = {"": tree.invisibleRootItem()}, {}
+
+    def folder(path):
+        if path not in folders:
+            parent, _, name = path.rpartition("/")
+            it = QTreeWidgetItem(folder(parent), [name])
+            it.setIcon(0, QIcon.fromTheme("folder"))
+            folders[path] = it
+        return folders[path]
+
+    for path in sorted(paths, key=lambda p: folders_first(p.lower())):
+        parent, _, name = path.rpartition("/")
+        it = items[path] = QTreeWidgetItem(folder(parent), [name])
+        it.setData(0, Qt.UserRole, path)
+    return items
