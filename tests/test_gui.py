@@ -54,6 +54,21 @@ class StagingTest(GuiTestCase):
         self.assertNotIn("+X", cached)
         self.assertEqual(self.tab.diff_ctx[:2], ("f.txt", False))  # Auswahl bleibt erhalten
 
+    def test_diff_scroll_resets_on_file_switch(self):
+        write(self.repo, "f.txt", "x\n" * 300)
+        write(self.repo, "nonl.txt", "y\n" * 300)
+        self.tab.resize(800, 600)
+        self.tab.refresh()
+        bar = self.tab.diff.verticalScrollBar()
+        self.select(self.tab.unstaged, "f.txt")
+        bar.setValue(bar.maximum())
+        pane = self.tab.diff.parentWidget()
+        width = pane.minimumSizeHint().width()
+        self.select(self.tab.unstaged, "nonl.txt")
+        self.assertEqual(bar.value(), 0)
+        self.tab.diff_title.setText("x" * 300)  # langer Pfad verbreitert die Diff-Spalte nicht (Splitter springt sonst)
+        self.assertEqual(pane.minimumSizeHint().width(), width)
+
     def test_stage_and_unstage_lines(self):
         write(self.repo, "f.txt", "1\nB1\nB2\n" + "".join(f"{i}\n" for i in range(3, 31)))
         self.tab.refresh()

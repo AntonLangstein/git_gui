@@ -13,7 +13,7 @@ from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QKeySequence, 
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QFrame, QHBoxLayout, QHeaderView,
     QInputDialog, QLabel, QLineEdit, QListWidget, QMainWindow,
-    QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSplitter, QStackedWidget,
+    QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy, QSplitter, QStackedWidget,
     QTabWidget, QTextBrowser, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
     QWidget,
 )
@@ -140,6 +140,8 @@ class RepoTab(QWidget):
         dh = QHBoxLayout(diff_head)
         dh.setContentsMargins(8, 4, 6, 4)
         self.diff_title = QLabel()
+        # Langer Pfad darf die Diff-Spalte nicht verbreitern (sonst springt der Splitter je nach Datei)
+        self.diff_title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.file_btn = QPushButton()
         self.file_btn.clicked.connect(self.toggle_file)
         self.lines_btn = QPushButton()
@@ -570,6 +572,7 @@ class RepoTab(QWidget):
                 f"<b>{name} läuft.</b> {len(conflicts)} Konflikt(e) offen." if conflicts else
                 f"<b>{name} läuft.</b> Alle Konflikte gelöst – „Fortsetzen“ schließt ab.")
         self.diff_ctx = None
+        pos = self.diff.verticalScrollBar().value()
         self.diff.clear()
         self.diff_title.clear()
         self.file_btn.hide()
@@ -582,6 +585,7 @@ class RepoTab(QWidget):
                      if it.data(0, Qt.UserRole) == path]
             if found:
                 widget.setCurrentItem(found[0])
+                self.diff.verticalScrollBar().setValue(pos)  # z.B. nach Hunk stagen an derselben Stelle bleiben
         self.branch = self.git("branch", "--show-current").strip() or "(detached)"
         counts = self.git("rev-list", "--left-right", "--count", "HEAD...@{u}").split()
         self.ahead_behind = tuple(map(int, counts)) if self.last_rc == 0 and len(counts) == 2 else None
@@ -1413,6 +1417,7 @@ class RepoTab(QWidget):
         self.diff_ctx = (path, cached, text)
         self.sel_lines, self.last_line = set(), None
         self.render_diff()
+        self.diff.verticalScrollBar().setValue(0)  # neue Datei oben beginnen, nicht an der alten Scrollposition
         self.diff_title.setText(path)
         self.file_btn.setText("Datei unstagen" if cached else "Datei stagen")
         self.file_btn.show()
