@@ -64,10 +64,15 @@ def ask_credentials(prompt):
 def install_askpass():
     """Kleines Startskript, das Git/SSH bei Passwortabfragen aufrufen; zeigt ask_credentials als Dialog."""
     folder = os.path.join(os.path.expanduser("~"), ".cache", "git_gui")
-    path = os.path.join(folder, "askpass.sh")
     package_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    script = (f"#!/bin/sh\nPYTHONPATH={shlex.quote(package_parent)}${{PYTHONPATH:+:$PYTHONPATH}} "
-              f"exec {shlex.quote(sys.executable)} -m gitgui --askpass \"$@\"\n")
+    if os.name == "nt":  # Windows: kein /bin/sh für das Windows-OpenSSH, daher Batch-Datei
+        path = os.path.join(folder, "askpass.bat")
+        script = (f'@set "PYTHONPATH={package_parent};%PYTHONPATH%"\r\n'
+                  f'@"{sys.executable}" -m gitgui --askpass %*\r\n')
+    else:
+        path = os.path.join(folder, "askpass.sh")
+        script = (f"#!/bin/sh\nPYTHONPATH={shlex.quote(package_parent)}${{PYTHONPATH:+:$PYTHONPATH}} "
+                  f"exec {shlex.quote(sys.executable)} -m gitgui --askpass \"$@\"\n")
     os.makedirs(folder, exist_ok=True)
     if not os.path.exists(path) or open(path).read() != script:
         with open(path, "w") as f:

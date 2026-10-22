@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gitgui"
 version = "0.2.0"
-description = "Schlanke Git-Oberfläche für Linux im Stil von Fork"
+description = "Schlanke Git-Oberfläche im Stil von Fork"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

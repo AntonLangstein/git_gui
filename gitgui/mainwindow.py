@@ -3,6 +3,7 @@ import html
 import os
 import shutil
 import subprocess
+import sys
 import time
 
 from PySide6.QtCore import QSettings, QTimer, Qt
@@ -22,6 +23,15 @@ from .manager import RepoManager
 
 def open_terminal(path):
     """Startet ein Terminal im Repo-Ordner; Rückgabe False, wenn keins gefunden wurde."""
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", "-a", os.environ.get("TERMINAL") or "Terminal", path])
+        return True
+    if os.name == "nt":
+        if shutil.which("wt"):  # Windows Terminal
+            subprocess.Popen(["wt", "-d", path])
+        else:
+            subprocess.Popen(["cmd"], cwd=path, creationflags=subprocess.CREATE_NEW_CONSOLE)
+        return True
     for term in (os.environ.get("TERMINAL"), "konsole", "kgx", "gnome-terminal", "kitty", "alacritty",
                  "foot", "wezterm", "xterm"):
         if term and shutil.which(term):

@@ -1,6 +1,6 @@
 # Git GUI
 
-Eine schlanke Git-Oberfläche für Linux im Stil von [Fork](https://git-fork.com/). Geschrieben in Python mit PySide6;
+Eine schlanke Git-Oberfläche für Linux (auch Windows und macOS) im Stil von [Fork](https://git-fork.com/). Geschrieben in Python mit PySide6;
 für alles wird das `git`-Kommandozeilenprogramm aufgerufen.
 
 ## Funktionen
@@ -59,7 +59,8 @@ und einen Eintrag „Git GUI“ im Anwendungsmenü an. Updates per `git pull` wi
 
 Entfernen mit `./install.sh --uninstall`.
 
-**Als Python-Paket** mit pip oder pipx (installiert ebenfalls den Befehl `gitgui`, aber keinen Menü-Eintrag):
+**Als Python-Paket** mit pip oder pipx (installiert ebenfalls den Befehl `gitgui`, aber keinen Menü-Eintrag) –
+so auch unter Windows und macOS:
 
 ```bash
 pipx install '.[syntax]'
@@ -135,6 +136,7 @@ Auf GitHub laufen sie bei jedem Push (`.github/workflows/tests.yml`).
 - Sehr große Diffs werden langsamer dargestellt; ab 4000 Zeilen ohne Syntaxfarben und Wort-Diff.
 - Syntaxfarben werden Zeile für Zeile bestimmt (mehrzeilige Strings/Kommentare nicht durchgehend erkannt).
 - Interaktiver Rebase nur ohne Merge-Commits im gewählten Bereich.
+- Entwickelt und getestet unter Linux; Windows und macOS werden unterstützt, sind aber kaum erprobt.
 
 Geplante und erledigte Verbesserungen stehen in der [ROADMAP](ROADMAP.md).
 

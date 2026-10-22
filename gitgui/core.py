@@ -168,6 +168,22 @@ def parse_status(out):
     return unstaged, staged, conflicts
 
 
+def parse_numstat(out):
+    """`git diff --numstat -z` -> {pfad: (hinzu, weg)}; Binärdateien fehlen."""
+    parts, stats, i = out.split("\0"), {}, 0
+    while i < len(parts):
+        fields = parts[i].split("\t")
+        i += 1
+        if len(fields) != 3:
+            continue
+        added, deleted, path = fields
+        if not path:  # Umbenennung: alter und neuer Pfad folgen als eigene Felder
+            path, i = parts[i + 1], i + 2
+        if added != "-":
+            stats[path] = (int(added), int(deleted))
+    return stats
+
+
 def split_hunks(diff):
     """Diff einer Datei -> (Kopf, [Hunks]); jeder Hunk beginnt mit @@ und ist einzeln anwendbar."""
     head, hunks = [], []
