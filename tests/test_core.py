@@ -4,13 +4,17 @@ import unittest
 from tests import helpers  # noqa: F401  (setzt die Testumgebung)
 from gitgui.core import (
     build_graph, file_diffs, folders_first, friendly_error, graph_args, group_repos, line_patch, monthly_series, parse_blame,
-    parse_conflicts, parse_file_log, parse_refs, parse_status, rebase_todo, relative_time, resolve_conflicts,
+    parse_conflicts, parse_file_log, parse_refs, parse_numstat, parse_status, rebase_todo, relative_time, resolve_conflicts,
     parse_ssh_remote, split_hunks, ssh_command_for, ssh_test_result,
 )
 from gitgui.diff import code_html, diff_html, hunk_marks, word_marks
 
 
 class StatusTest(unittest.TestCase):
+    def test_parse_numstat(self):
+        out = "3\t1\ta.py\0-\t-\tbild.png\0" "2\t0\t\0alt.txt\0neu.txt\0"
+        self.assertEqual(parse_numstat(out), {"a.py": (3, 1), "neu.txt": (2, 0)})
+
     def test_parse_status(self):
         out = " M a.txt\0M  b.txt\0MM c.txt\0?? d.txt\0R  new.txt\0old.txt\0 R c\0a\0UU e.txt\0AA f.txt\0"
         self.assertEqual(parse_status(out), (

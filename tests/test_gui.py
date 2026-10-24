@@ -12,6 +12,7 @@ import unittest
 
 from tests.helpers import FakeMenu, GuiTestCase, commit, git, make_repo, write
 from PySide6.QtCore import QSettings, QUrl, Qt
+from PySide6.QtWidgets import QLabel
 
 from gitgui.core import GIT_ENV, split_hunks
 from gitgui.dialogs import ConflictDialog, FileHistoryDialog, RebaseDialog
@@ -98,6 +99,9 @@ class StagingTest(GuiTestCase):
         self.tab.refresh()
         top = [self.tab.unstaged.topLevelItem(i).text(0) for i in range(self.tab.unstaged.topLevelItemCount())]
         self.assertEqual(top, ["app", "f.txt"])  # Ordner zuerst
+        stat = self.tab.unstaged.itemWidget(item_named(self.tab.unstaged, "b.txt"), 1).findChild(QLabel).text()
+        self.assertIn(">+1<", stat)  # Datei zeigt ihre +/− Zeilen, Ordner nicht
+        self.assertIsNone(self.tab.unstaged.itemWidget(item_named(self.tab.unstaged, "app"), 1))
         self.tab.stage(self.tab.selected(item_named(self.tab.unstaged, "app")))
         self.assertEqual(git(self.repo, "diff", "--cached", "--name-only").split(), ["app/b.txt", "app/pages/a.txt"])
 

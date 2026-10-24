@@ -67,6 +67,7 @@ QTreeWidget#log { border: none; }
 QHeaderView::section { background: $panel; color: $tab_text; border: none; border-right: 1px solid $border;
                        border-bottom: 1px solid $border; padding: 3px 6px; }
 QPlainTextEdit, QTextBrowser, QListWidget { border: none; }
+QLabel#lineStat { background: $input; border-radius: 4px; padding: 0 5px; margin: 1px 4px; font-weight: bold; }
 QSplitter::handle { background: $border; }
 QSplitter::handle:horizontal { width: 1px; }
 QSplitter::handle:vertical { height: 1px; }

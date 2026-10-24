@@ -6,7 +6,7 @@ import shlex
 import subprocess
 import time
 
-from PySide6.QtCore import QFileSystemWatcher, QProcess, QProcessEnvironment, QSettings, QTimer, QUrl, Qt, Signal
+from PySide6.QtCore import QFileSystemWatcher, QProcess, QProcessEnvironment, QSettings, QSize, QTimer, QUrl, Qt, Signal
 
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QKeySequence, QShortcut
 
@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 from .theme import COLORS, STATUS_COLORS
 from .core import (
     GIT_ENV, OPERATIONS, build_graph, file_diffs, folders_first, friendly_error, git_out,
-    graph_args, line_patch, load_stars, parse_refs, parse_ssh_remote, parse_status, repo_value,
+    graph_args, line_patch, load_stars, parse_numstat, parse_refs, parse_ssh_remote, parse_status, repo_value,
     save_stars, set_repo_value, split_hunks, ssh_test_result,
     view_option, ws_args,
 )
@@ -80,8 +80,11 @@ class RepoTab(QWidget):
         self.mono = mono
 
         def file_list():
-            w = QTreeWidget(objectName="files", headerHidden=True, indentation=14,
+            w = QTreeWidget(objectName="files", headerHidden=True, indentation=14, columnCount=2,
                             selectionMode=QAbstractItemView.ExtendedSelection)
+            w.header().setStretchLastSection(False)
+            w.header().setSectionResizeMode(0, QHeaderView.Stretch)
+            w.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)  # +/− Zeilen
             w.setContextMenuPolicy(Qt.CustomContextMenu)
             w.customContextMenuRequested.connect(lambda pos, w=w: self.file_menu(w, pos))
             return w
@@ -542,12 +545,28 @@ class RepoTab(QWidget):
         unstaged, staged, conflicts = parse_status(self.git("status", "--porcelain=v1", "-z", "--untracked-files=all"))
         keep = self.diff_ctx and self.diff_ctx[:2]  # angezeigte Datei nach dem Refresh wieder auswählen
         self.unstaged_codes = dict(unstaged)
-        for widget, entries in ((self.unstaged, unstaged), (self.staged, staged)):
+        for widget, entries, cached in ((self.unstaged, unstaged, False), (self.staged, staged, True)):
             widget.blockSignals(True)
             widget.clear()
             codes = dict(entries)
+            stats = parse_numstat(self.git("diff", "--numstat", "-z", *(["--cached"] if cached else [])))
             for path, it in path_tree(widget, codes).items():
                 it.setIcon(0, status_icon(codes[path]))
+                added, deleted = stats.get(path) or ((self.count_lines(path), 0) if codes[path] == "?" else (0, 0))
+                text = " ".join(f'<span style="color:{STATUS_COLORS[c]}">{sign}{n}</span>'
+                                for n, sign, c in ((added, "+", "A"), (deleted, "−", "D")) if n)
+                if text:
+                    box = QWidget()  # rechtsbündig, Plakette nur so breit wie ihre Zahlen
+                    box.setAttribute(Qt.WA_TransparentForMouseEvents)
+                    row = QHBoxLayout(box)
+                    row.setContentsMargins(0, 0, 0, 0)
+                    row.addStretch()
+                    label = QLabel(text, objectName="lineStat")
+                    label.ensurePolished()  # Stylesheet-Padding schon in der Breite berücksichtigen
+                    row.addWidget(label)
+                    # sonst kennt ResizeToContents die Breite nicht; +8 für das Item-Padding (theme.py, #files::item)
+                    it.setSizeHint(1, box.sizeHint() + QSize(8, 0))
+                    widget.setItemWidget(it, 1, box)
             widget.expandAll()
             widget.blockSignals(False)
         self.unstaged_label.setText(f"Nicht gestaged ({len(unstaged)})")
@@ -595,6 +614,15 @@ class RepoTab(QWidget):
         self.watch_git_dir()
         self.last_refresh = time.time()
         self.git_state = self.state_fingerprint()
+
+    def count_lines(self, path):
+        """Zeilen einer unversionierten Datei (Binärdatei -> 0)."""
+        try:
+            with open(os.path.join(self.repo, path), "rb") as f:
+                data = f.read()
+        except OSError:
+            return 0
+        return 0 if b"\0" in data else data.count(b"\n") + (not data.endswith(b"\n") and bool(data))
 
     def watch_git_dir(self):
         """.git, HEAD-Datei und alle Ordner unter refs/ beobachten (QFileSystemWatcher ist nicht rekursiv)."""
